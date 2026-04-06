@@ -41,6 +41,7 @@ TIER_DEVELOPMENTAL_WEIGHT_RANGES: dict[int, tuple[float, float]] = {
     2: (0.9, 0.55),
     3: (0.65, 0.8),
     4: (0.45, 1.0),
+    # Tier 5 intentionally caps at 1.15 - mature Itera at peak actualization may exceed baseline range. Raw signals remain 0.0-1.0. Tier weights do not.
     5: (0.25, 1.15),
 }
 

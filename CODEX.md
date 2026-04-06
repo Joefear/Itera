@@ -24,7 +24,7 @@ Identity Core  ←→  Environment Interface  ←→  World Adapter
 |---|---|
 | `core/identity.py` | Persistent self — save/load, developmental state, session continuity |
 | `core/memory.py` | Knowledge graph — nodes, edges, timestamps, relevance decay |
-| `core/drives.py` | Intrinsic motivation signals — curiosity, resolution, mastery, boredom |
+| `core/drives.py` | Five-tier Maslow drive hierarchy — SURVIVAL, SECURITY, SOCIAL, MASTERY, ACTUALIZATION. Weighted suppression, not rules. Raw signals 0.0–1.0, tier effective_weight may reach 1.15 at peak actualization. |
 | `core/hypothesis.py` | Observe → hypothesize → test → store → update loop |
 | `core/growth.py` | Developmental tracking — discoveries, capability milestones |
 | `interface/environment.py` | Abstract base class — perceive, act, get_outcome, reset |
@@ -41,6 +41,7 @@ Identity Core  ←→  Environment Interface  ←→  World Adapter
 - No hardcoded world-specific logic in `core/` — ever
 - Persistent state saves to JSON or SQLite in `data/` (create if needed)
 - All drive signals return float values in range 0.0–1.0
+- Raw drive signals return float 0.0–1.0. Tier effective_weight may reach 1.15 at Tier 5 peak — this is intentional.
 - Memory nodes use UUID identifiers
 
 ## What you do NOT do
@@ -60,7 +61,7 @@ refactor(module): description
 ```
 Examples:
 - `feat(core/memory): add knowledge graph node creation and edge linking`
-- `feat(core/drives): implement curiosity and boredom signal calculation`
+- `feat(core/drives): implement five-tier Maslow drive hierarchy with weighted suppression`
 - `scaffold: initial folder structure and empty modules`
 
 ## Current sprint

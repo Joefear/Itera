@@ -1,4 +1,4 @@
-# Itera — Design Document
+# Itera — Design Document (v2)
 ### Project Codename: *The Self-Building Mind*
 **Defiant Industries, Inc.**  
 **Status:** Pre-build design phase  
@@ -68,11 +68,11 @@ Not a log. A living knowledge graph where nodes are experiences, discoveries, en
 
 **Intrinsic drives**
 Functional analogs to motivation — not real emotions, but signals that shape attention and behavior:
-- *Curiosity pull* — novelty in the environment draws investigation
-- *Resolution drive* — unresolved contradictions create discomfort that pushes toward understanding
-- *Mastery satisfaction* — completing understanding of something generates a positive signal
-- *Boredom* — fully solved problems generate negative signal, pushing toward new challenges
-- *Social modeling* — interest in predicting and understanding other entities
+- *SURVIVAL* — threat level and resource scarcity dominate under acute stress
+- *SECURITY* — environmental stability and unknown territory shape caution and consolidation
+- *SOCIAL* — relationship depth and entity prediction gaps pull attention toward other minds
+- *MASTERY* — competence growth and discovery pull drive learning, skill-building, and exploration
+- *ACTUALIZATION* — purpose clarity and identity coherence shape long-horizon self-directed behavior
 
 **Hypothesis engine**
 Itera doesn't just observe — it forms testable predictions, runs experiments, stores outcomes, and updates its model. This is the scientific method as a core cognitive loop, not an add-on.
@@ -178,7 +178,7 @@ Itera/
 ├── core/
 │   ├── identity.py          # Persistent self — the entity that persists
 │   ├── memory.py            # Knowledge graph, episodic store, decay
-│   ├── drives.py            # Intrinsic motivation signals
+│   ├── drives.py            # Five-tier Maslow drive hierarchy
 │   ├── hypothesis.py        # Form → test → store → update loop
 │   └── growth.py            # Developmental state tracking
 ├── interface/
@@ -225,7 +225,7 @@ Itera/
 1. Create the `Itera` repo with this design document as `DESIGN.md`
 2. Implement `core/identity.py` — persistent identity object with save/load
 3. Implement `core/memory.py` — basic knowledge graph (nodes + edges + timestamps)
-4. Implement `core/drives.py` — curiosity, resolution, mastery, boredom signals
+4. Implement `core/drives.py` — five-tier Maslow drive hierarchy with weighted suppression
 5. Implement `interface/environment.py` — abstract base class
 6. Implement `adapters/text_sim/` — minimal 2D grid world with physics objects
 7. Implement `core/hypothesis.py` — observe → hypothesize → test → store loop
