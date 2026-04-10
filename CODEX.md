@@ -34,6 +34,23 @@ Identity Core  ←→  Environment Interface  ←→  World Adapter
 | `simulation/fast_sim.py` | Compressed time loop |
 | `simulation/game_time.py` | Human-paced loop |
 
+## Memory API reference
+The actual method names in core/memory.py differ from the
+original spec. Use these names when calling memory from
+identity.py, growth.py, or any future module:
+
+| Operation | Method call |
+|---|---|
+| Create a node | `create_node(node_type, content, valence, tags)` |
+| Connect two nodes | `connect(source_id, target_id, edge_type, weight, valence)` |
+| Fetch by ID | `get_node(node_id)` |
+| Search nodes | `retrieve(query, tags, valence_bias, limit)` |
+| Get neighbours | `related_nodes(node_id, edge_types, limit)` |
+| Store world outcome | `absorb_outcome(outcome_dict, valence, tags)` |
+| Decay all nodes | `apply_decay()` |
+| Count nodes/edges | `summary()["node_count"]` / `summary()["edge_count"]` |
+| Weak isolated nodes | `faded_isolates()` |
+
 ## Code standards
 - Python 3.11+
 - Type hints on all function signatures
@@ -43,6 +60,7 @@ Identity Core  ←→  Environment Interface  ←→  World Adapter
 - All drive signals return float values in range 0.0–1.0
 - Raw drive signals return float 0.0–1.0. Tier effective_weight may reach 1.15 at Tier 5 peak — this is intentional.
 - Memory nodes use UUID identifiers
+- `core/memory.py` uses `MIN_RELEVANCE = 0.05` (not `RELEVANCE_FLOOR` — same value, different name). Never goes below this floor.
 
 ## What you do NOT do
 - Do not modify DESIGN.md or CODEX.md or CLAUDE.md
