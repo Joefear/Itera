@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import json
 from pathlib import Path
 import time
 from typing import Any
@@ -29,12 +30,14 @@ DEFAULT_LOG_INTERVAL = 10
 DEFAULT_CHECKPOINT_INTERVAL = 100
 DEFAULT_VERBOSE = True
 CONSECUTIVE_FAILURE_THRESHOLD = 3
+CHECKPOINT_FULL_SAVE = False
 DEFAULT_EXAMINE_FALLBACK_ACTION = "examine"
 DEFAULT_MOVE_FALLBACK_ACTION = "move"
 DEFAULT_MOVE_DIRECTION = "north"
 DEFAULT_FALLBACK_DRIVE_SOURCE = "MASTERY"
 DEFAULT_FALLBACK_RADIUS = 1
 ENTITY_PREDICTION_GAP_NORMALIZER = 5.0
+TOP_MEMORY_LIMIT = 3
 
 DOMAIN_KEYWORDS: dict[str, tuple[str, ...]] = {
     "physical": ("move", "push", "heat", "cool", "combine", "rock", "water", "fire", "stone"),
@@ -71,6 +74,7 @@ class SimResult:
     capabilities_emerged: int
     memory_nodes: int
     termination_reason: str
+    emerged_capability_names: list[str] = field(default_factory=list)
 
 
 class FastSim:
@@ -89,6 +93,7 @@ class FastSim:
         self._last_tick_count = 0
         self._last_hypothesis_total = 0
         self._last_confirmed_total = 0
+        self._progress_snapshot_paths: list[Path] = []
 
     def setup(self) -> None:
         """Initialize identity and adapter state and log the starting snapshot."""
@@ -154,17 +159,21 @@ class FastSim:
             termination_reason = "max_cycles"
 
         self.identity.sleep()
+        self._cleanup_progress_snapshots()
+        capability_summaries = self.growth.get_emerged_capabilities_summary()
         result = SimResult(
             total_cycles=completed_cycles,
             total_duration_seconds=time.time() - self._started_at,
             final_developmental_stage=self.identity.developmental_stage(),
             hypotheses_generated=self.identity.developmental.total_hypotheses,
             hypotheses_confirmed=self.identity.developmental.total_confirmed,
-            capabilities_emerged=len(self.growth.get_capabilities()),
+            capabilities_emerged=len(capability_summaries),
             memory_nodes=self.identity.memory.summary()["node_count"],
             termination_reason=termination_reason,
+            emerged_capability_names=[str(item["name"]) for item in capability_summaries],
         )
         if self.config.verbose:
+            self._print_final_summary(result, capability_summaries)
             print("FastSim result:", result)
         return result
 
@@ -256,7 +265,22 @@ class FastSim:
     def _checkpoint(self, cycle: int) -> None:
         """Persist identity state mid-run."""
 
-        self.identity.sleep()
+        if CHECKPOINT_FULL_SAVE:
+            self.identity.sleep()
+        else:
+            snapshot_path = self._progress_snapshot_path(cycle)
+            dominant_drive, dominant_weight = self.identity.drives.get_dominant_drive()
+            snapshot = {
+                "cycle": int(cycle),
+                "stage": round(self.identity.developmental_stage(), 4),
+                "phase": self.identity.developmental.phase_name,
+                "hypotheses": int(self.identity.developmental.total_hypotheses),
+                "confirmed": int(self.identity.developmental.total_confirmed),
+                "dominant_drive": dominant_drive,
+                "dominant_weight": round(dominant_weight, 4),
+            }
+            snapshot_path.write_text(json.dumps(snapshot, separators=(",", ":")), encoding="utf-8")
+            self._progress_snapshot_paths.append(snapshot_path)
         if self.config.verbose:
             print(f"Checkpoint saved at cycle {cycle}")
 
@@ -350,10 +374,76 @@ class FastSim:
             tick_method()
             self._last_tick_count += 1
 
+    def _progress_snapshot_path(self, cycle: int) -> Path:
+        """Return the path for a lightweight progress snapshot."""
+
+        root_dir = self.identity.data_dir.parent
+        root_dir.mkdir(parents=True, exist_ok=True)
+        return root_dir / f"progress_{self.identity.data_dir.name}_{int(cycle)}.json"
+
+    def _cleanup_progress_snapshots(self) -> None:
+        """Remove lightweight progress snapshots after the final full save."""
+
+        for path in self._progress_snapshot_paths:
+            if path.exists():
+                path.unlink()
+        self._progress_snapshot_paths = []
+
+    def _top_memories(self) -> list[Any]:
+        """Return the most relevant memories without mutating retrieval state."""
+
+        memories = list(self.identity.memory.nodes.values())
+        memories.sort(
+            key=lambda node: (node.relevance, node.access_count, node.last_accessed),
+            reverse=True,
+        )
+        return memories[:TOP_MEMORY_LIMIT]
+
+    def _print_final_summary(self, result: SimResult, capability_summaries: list[dict[str, Any]]) -> None:
+        """Print a human-readable end-of-run summary."""
+
+        print("=== ITERA SESSION COMPLETE ===")
+        print(f"Cycles: {result.total_cycles}")
+        print(f"Duration: {result.total_duration_seconds:.2f}s")
+        print(
+            f"Final stage: {result.final_developmental_stage:.4f} "
+            f"({self.identity.developmental.phase_name})"
+        )
+        print(
+            f"Hypotheses: {result.hypotheses_generated} generated, "
+            f"{result.hypotheses_confirmed} confirmed"
+        )
+        print(f"Memory nodes: {result.memory_nodes}")
+        print(f"Dominant drive at end: {self.identity.current_drive()}")
+        print()
+        print("=== CAPABILITIES EMERGED ===")
+        if not capability_summaries:
+            print("None")
+        else:
+            for index, capability in enumerate(capability_summaries, start=1):
+                print(f"{index}. {capability['name']} (domain: {capability['domain']})")
+                print(f"   {capability['description']}")
+                print(
+                    f"   Confidence: {capability['confidence']:.2f} | "
+                    f"Evidence: {capability['evidence_count']} experiences"
+                )
+        print()
+        print("=== TOP MEMORIES ===")
+        memories = self._top_memories()
+        if not memories:
+            print("None")
+        else:
+            for index, node in enumerate(memories, start=1):
+                print(
+                    f"{index}. {node.node_type} | tags={node.tags} | "
+                    f"valence={node.valence:.2f} | relevance={node.relevance:.2f}"
+                )
+
 
 if __name__ == "__main__":
+    # Clear data/identity between major test runs to avoid carrying large saved sessions forward.
     demo_data_dir = str(Path(DEFAULT_DATA_DIR) / f"fast_sim_demo_{int(time.time())}")
-    config = SimConfig(max_cycles=200, verbose=True, data_dir=demo_data_dir)
+    config = SimConfig(max_cycles=50, verbose=True, data_dir=demo_data_dir)
     sim = FastSim(config=config)
     sim.setup()
     result = sim.run()

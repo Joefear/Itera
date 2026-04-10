@@ -246,6 +246,21 @@ class GrowthTracker:
             if capability.domain == normalized_domain
         ]
 
+    def get_emerged_capabilities_summary(self) -> list[dict[str, Any]]:
+        """Return a human-readable summary of all emerged capabilities."""
+
+        return [
+            {
+                "name": capability.name,
+                "domain": capability.domain,
+                "description": capability.description,
+                "confidence": capability.confidence,
+                "evidence_count": capability.evidence_count,
+                "emerged_at": capability.emerged_at,
+            }
+            for capability in self.get_capabilities()
+        ]
+
     def get_domain_depth(self, domain: str) -> DomainDepth | None:
         """Return the exploration-depth record for a specific domain."""
 
