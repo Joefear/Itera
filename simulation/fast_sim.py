@@ -353,7 +353,7 @@ class FastSim:
 
 if __name__ == "__main__":
     demo_data_dir = str(Path(DEFAULT_DATA_DIR) / f"fast_sim_demo_{int(time.time())}")
-    config = SimConfig(max_cycles=50, verbose=True, data_dir=demo_data_dir)
+    config = SimConfig(max_cycles=200, verbose=True, data_dir=demo_data_dir)
     sim = FastSim(config=config)
     sim.setup()
     result = sim.run()

@@ -42,6 +42,8 @@ EXAMINE_NOVELTY_BONUS = 0.15
 TEXT_SIM_WORLD_NAME = "text_sim"
 NOVELTY_CHANGE_FLOOR = 0.25
 INTERACTION_NOVELTY_MINIMUM = 0.5
+MINIMUM_NOVELTY_PER_CYCLE = 0.1
+PROPERTY_CHANGE_NOVELTY_THRESHOLD = 0.05
 
 
 def _clamp(value: float, minimum: float, maximum: float) -> float:
@@ -223,9 +225,28 @@ class TextSimAdapter(EnvironmentInterface):
         if not self._last_perception_signature:
             return 1.0
         if signature == self._last_perception_signature:
-            return 0.0
+            return MINIMUM_NOVELTY_PER_CYCLE
+
+        current = json.loads(signature)
+        previous = json.loads(self._last_perception_signature)
+        previous_by_name = {
+            (item["name"], tuple(item["position"])): item
+            for item in previous
+        }
+        for item in current:
+            match = previous_by_name.get((item["name"], tuple(item["position"])))
+            if match is None:
+                return max(MINIMUM_NOVELTY_PER_CYCLE, NOVELTY_CHANGE_FLOOR)
+            for key, value in item["properties"].items():
+                prior_value = float(match["properties"].get(key, value))
+                if abs(float(value) - prior_value) > PROPERTY_CHANGE_NOVELTY_THRESHOLD:
+                    return max(MINIMUM_NOVELTY_PER_CYCLE, NOVELTY_CHANGE_FLOOR)
+
         difference = abs(len(signature) - len(self._last_perception_signature))
-        return _clamp((difference / NOVELTY_DIFFERENCE_SCALE) + NOVELTY_CHANGE_FLOOR, 0.0, 1.0)
+        return max(
+            MINIMUM_NOVELTY_PER_CYCLE,
+            _clamp((difference / NOVELTY_DIFFERENCE_SCALE) + NOVELTY_CHANGE_FLOOR, 0.0, 1.0),
+        )
 
     def _assess_valence(
         self,

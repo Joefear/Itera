@@ -26,6 +26,11 @@ ITERA_START_POSITION = (5, 5)
 FIRE_SPREAD_PROBABILITY = 0.15
 EMBER_INITIAL_TEMPERATURE = 0.6
 EMBER_INITIAL_BRIGHTNESS = 0.55
+CREATURE_MOVE_PROBABILITY = 0.6
+FIRE_RESPAWN_INTERVAL = 50
+EXAMINE_NOISE_RANGE = 0.05
+CREATURE_STAGNATION_LIMIT = 10
+CREATURE_PROPERTY_VARIATION = 0.05
 
 DIRECTIONS: dict[str, tuple[int, int]] = {
     "north": (0, -1),
@@ -55,6 +60,7 @@ class TextWorld:
         self.itera_position: tuple[int, int] = ITERA_START_POSITION
         self.objects: dict[str, WorldObject] = {}
         self.tick_count = 0
+        self._creature_last_move_tick: dict[str, int] = {}
         self.reset()
 
     def reset(self) -> None:
@@ -64,11 +70,14 @@ class TextWorld:
         self.tick_count = 0
         self.itera_position = (self.grid_size // 2, self.grid_size // 2)
         self.objects = {}
+        self._creature_last_move_tick = {}
         for obj in [
             make_rock((2, 2)),
+            make_rock((8, 5)),
             make_fire((7, 2)),
             make_water((2, 7)),
-            make_creature((7, 7)),
+            make_creature((3, 5)),
+            make_creature((6, 6)),
             make_stone_deposit((5, 3)),
         ]:
             self.spawn_object(obj)
@@ -116,6 +125,9 @@ class TextWorld:
         details: dict[str, Any] = {}
 
         if action == "examine":
+            for key, value in list(obj.properties.items()):
+                noise = self._rng.uniform(-EXAMINE_NOISE_RANGE, EXAMINE_NOISE_RANGE)
+                obj.properties[key] = _clamp(value + noise)
             details["observation"] = f"{obj.name} observed"
         elif action == "push":
             success = self._push_object(obj)
@@ -149,6 +161,10 @@ class TextWorld:
         self._move_creatures()
         self._spread_fire()
         self._flow_water()
+        if not any(obj.name == "fire" for obj in self.objects.values()) and self.tick_count % FIRE_RESPAWN_INTERVAL == 0:
+            position = self._random_empty_cell()
+            if position is not None:
+                self.spawn_object(make_fire(position))
 
     def get_state(self) -> dict[str, Any]:
         """Return the full visible world state."""
@@ -168,6 +184,8 @@ class TextWorld:
         if not self._in_bounds(obj.position):
             raise ValueError(f"Object position out of bounds: {obj.position}")
         self.objects[obj.id] = obj
+        if "creature" in obj.tags:
+            self._creature_last_move_tick[obj.id] = self.tick_count
 
     def _in_bounds(self, position: tuple[int, int]) -> bool:
         """Return whether a grid coordinate is inside the world."""
@@ -219,17 +237,35 @@ class TextWorld:
         for obj in self.objects.values():
             if "creature" not in obj.tags:
                 continue
+            obj.properties["reactivity"] = _clamp(
+                obj.properties.get("reactivity", 0.0)
+                + self._rng.uniform(-CREATURE_PROPERTY_VARIATION, CREATURE_PROPERTY_VARIATION)
+            )
+            obj.properties["brightness"] = _clamp(
+                obj.properties.get("brightness", 0.0)
+                + self._rng.uniform(-(CREATURE_PROPERTY_VARIATION / 2.0), CREATURE_PROPERTY_VARIATION / 2.0)
+            )
+            moved = False
             dx = self.itera_position[0] - obj.position[0]
             dy = self.itera_position[1] - obj.position[1]
             step_x = 0 if dx == 0 else int(dx / abs(dx))
             step_y = 0 if dy == 0 else int(dy / abs(dy))
-            if abs(dx) + abs(dy) <= DEFAULT_NEARBY_RADIUS:
+            if self._rng.random() > CREATURE_MOVE_PROBABILITY:
+                candidate = obj.position
+            elif abs(dx) + abs(dy) <= DEFAULT_NEARBY_RADIUS:
                 candidate = (obj.position[0] + step_x, obj.position[1] + step_y)
             else:
                 move = self._rng.choice(list(DIRECTIONS.values()))
                 candidate = (obj.position[0] + move[0], obj.position[1] + move[1])
-            if self._in_bounds(candidate):
+            if self._in_bounds(candidate) and candidate != obj.position:
                 obj.position = candidate
+                self._creature_last_move_tick[obj.id] = self.tick_count
+                moved = True
+            if not moved and self.tick_count - self._creature_last_move_tick.get(obj.id, 0) >= CREATURE_STAGNATION_LIMIT:
+                teleport_target = self._random_empty_cell()
+                if teleport_target is not None:
+                    obj.position = teleport_target
+                    self._creature_last_move_tick[obj.id] = self.tick_count
 
     def _spread_fire(self) -> None:
         """Warm nearby objects and occasionally brighten adjacent cells."""
@@ -269,6 +305,20 @@ class TextWorld:
             (position[0] + dx, position[1] + dy)
             for dx, dy in DIRECTIONS.values()
             if self._in_bounds((position[0] + dx, position[1] + dy))
+        ]
+        if not candidates:
+            return None
+        return self._rng.choice(candidates)
+
+    def _random_empty_cell(self) -> tuple[int, int] | None:
+        """Return a random cell that does not currently contain an object."""
+
+        occupied = {obj.position for obj in self.objects.values()}
+        candidates = [
+            (x, y)
+            for x in range(self.grid_size)
+            for y in range(self.grid_size)
+            if (x, y) not in occupied and (x, y) != self.itera_position
         ]
         if not candidates:
             return None

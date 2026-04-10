@@ -50,6 +50,7 @@ MAX_STAGE = 1.0
 MIN_VALENCE = -1.0
 MAX_VALENCE = 1.0
 POSITIVE_VALENCE_DISCOVERY_THRESHOLD = 0.35
+POSITIVE_VALENCE_MASTERY_THRESHOLD = 0.3
 DRIVE_COMPETENCE_BASE = 0.25
 DRIVE_DISCOVERY_BASE = 0.35
 DRIVE_STABILITY_POSITIVE_BASE = 0.4
@@ -60,6 +61,10 @@ DRIVE_UNKNOWN_BASE = 0.25
 DRIVE_STABILITY_NEGATIVE_BASE = 0.5
 DRIVE_STABILITY_NEGATIVE_SCALE = 0.5
 DISCOVERY_MEMORY_VALENCE = 0.25
+SOCIAL_RELATIONSHIP_DEPTH_PER_CREATURE = 0.47
+SOCIAL_ENTITY_PREDICTION_GAP_SIGNAL = 0.72
+MASTERY_COMPETENCE_PER_CONFIRMATION = 0.15
+MASTERY_DISCOVERY_PULL_SIGNAL = 0.4
 
 
 def _clamp(value: float, minimum: float, maximum: float) -> float:
@@ -183,6 +188,7 @@ class Identity:
         self._awake = False
         self._last_decision: dict[str, Any] | None = None
         self._known_confirmed_ids: set[str] = set()
+        self._last_social_updates: dict[str, float] = {}
 
     def wake(self) -> dict[str, Any]:
         """Load persisted state if present and return a session summary."""
@@ -259,7 +265,14 @@ class Identity:
     def perceive(self, observation: dict[str, Any]) -> None:
         """Process a world observation through drives, hypotheses, and memory."""
 
-        stored_observation = self.hypothesis_engine.observe(dict(observation))
+        social_updates = self._social_drive_updates_from_observation(observation)
+        self._last_social_updates = dict(social_updates)
+        observation_for_hypothesis = dict(observation)
+        if "novelty_hint" in observation:
+            observation_for_hypothesis["novelty_hint"] = observation["novelty_hint"]
+        stored_observation = self.hypothesis_engine.observe(observation_for_hypothesis)
+        if social_updates:
+            self.drives.update(social_updates)
         generated = self.hypothesis_engine.generate_hypothesis(stored_observation)
         dominant_drive = self.current_drive()
         self.developmental.record_dominant_drive(dominant_drive)
@@ -341,12 +354,19 @@ class Identity:
             )
             self.hypothesis_engine.evaluate(hypothesis, evaluation)
 
-        self.drives.update(self._drive_updates_from_valence(clamped_valence))
+        confirmed_after = {hypothesis.id for hypothesis in self.hypothesis_engine.get_confirmed()}
+        confirmed_delta = len(confirmed_after - confirmed_before)
+        drive_updates = self._drive_updates_from_valence(clamped_valence)
+        if confirmed_delta > 0 or clamped_valence >= POSITIVE_VALENCE_MASTERY_THRESHOLD:
+            mastery_updates = self._mastery_drive_updates(self.developmental.total_confirmed + confirmed_delta)
+            for signal_name, signal_value in mastery_updates.items():
+                drive_updates[signal_name] = max(drive_updates.get(signal_name, 0.0), signal_value)
+        for signal_name, signal_value in self._last_social_updates.items():
+            drive_updates[signal_name] = max(drive_updates.get(signal_name, 0.0), signal_value)
+        self.drives.update(drive_updates)
         dominant_after = self.current_drive()
         self.developmental.record_dominant_drive(dominant_after)
 
-        confirmed_after = {hypothesis.id for hypothesis in self.hypothesis_engine.get_confirmed()}
-        confirmed_delta = len(confirmed_after - confirmed_before)
         self.developmental.advance(confirmed_delta=confirmed_delta, cycle_delta=1)
         self.drives.advance_developmental_stage(self.developmental.stage - self.drives.developmental_stage)
         self._known_confirmed_ids = confirmed_after
@@ -527,6 +547,80 @@ class Identity:
             "resource_scarcity": min(1.0, DRIVE_SCARCITY_BASE + magnitude),
             "unknown_territory": min(1.0, DRIVE_UNKNOWN_BASE + magnitude),
             "environmental_stability": max(0.0, DRIVE_STABILITY_NEGATIVE_BASE - (magnitude * DRIVE_STABILITY_NEGATIVE_SCALE)),
+        }
+
+    def _social_drive_updates_from_observation(self, observation: dict[str, Any]) -> dict[str, float]:
+        """Extract explicit social-drive updates from visible creature entities."""
+
+        creatures = self._creature_entities(observation)
+        creature_count = len(creatures)
+        if creature_count <= 0:
+            return {}
+        average_reactivity = sum(
+            float(creature.get("properties", {}).get("reactivity", SOCIAL_ENTITY_PREDICTION_GAP_SIGNAL))
+            for creature in creatures
+        ) / float(creature_count)
+        return {
+            "relationship_depth": min(1.0, creature_count * SOCIAL_RELATIONSHIP_DEPTH_PER_CREATURE),
+            "entity_prediction_gap": max(SOCIAL_ENTITY_PREDICTION_GAP_SIGNAL, average_reactivity),
+        }
+
+    def _creature_entities(self, observation: dict[str, Any]) -> list[dict[str, Any]]:
+        """Return creature entities from an observation payload."""
+
+        entities = observation.get("entities", [])
+        if not isinstance(entities, list):
+            return []
+        return [
+            entity
+            for entity in entities
+            if isinstance(entity, dict) and "creature" in entity.get("tags", [])
+        ]
+
+    def _creature_observation_features(self, observation: dict[str, Any]) -> dict[str, float]:
+        """Derive dynamic creature features that keep observation novelty alive."""
+
+        creatures = self._creature_entities(observation)
+        creature_count = len(creatures)
+        if creature_count <= 0:
+            return {}
+
+        properties = [dict(creature.get("properties", {})) for creature in creatures]
+        positions = [
+            creature.get("position", (0, 0))
+            for creature in creatures
+            if isinstance(creature.get("position"), tuple) and len(creature.get("position")) == 2
+        ]
+        mean_x = 0.0
+        mean_y = 0.0
+        if positions:
+            mean_x = sum(float(position[0]) for position in positions) / float(len(positions))
+            mean_y = sum(float(position[1]) for position in positions) / float(len(positions))
+
+        return {
+            "visible_creature_count": float(creature_count),
+            "creature_mean_x": mean_x,
+            "creature_mean_y": mean_y,
+            "creature_reactivity_average": sum(
+                float(item.get("reactivity", SOCIAL_ENTITY_PREDICTION_GAP_SIGNAL))
+                for item in properties
+            ) / float(len(properties)),
+            "creature_temperature_average": sum(
+                float(item.get("temperature", 0.0))
+                for item in properties
+            ) / float(len(properties)),
+            "creature_brightness_average": sum(
+                float(item.get("brightness", 0.0))
+                for item in properties
+            ) / float(len(properties)),
+        }
+
+    def _mastery_drive_updates(self, confirmed_count: int) -> dict[str, float]:
+        """Return mastery-signal updates from accumulated confirmed hypotheses."""
+
+        return {
+            "competence_growth": min(1.0, max(0, int(confirmed_count)) * MASTERY_COMPETENCE_PER_CONFIRMATION),
+            "discovery_pull": MASTERY_DISCOVERY_PULL_SIGNAL,
         }
 
 
