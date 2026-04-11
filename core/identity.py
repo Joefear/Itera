@@ -17,11 +17,13 @@ from typing import Any
 try:
     import core.memory as memory_module
     from core.drives import DriveHierarchy
+    from core.empathy import EmpathyLayer
     from core.memory import MemoryGraph
     from core.hypothesis import HypothesisEngine
 except ModuleNotFoundError:  # pragma: no cover - convenience for direct execution
     import memory as memory_module
     from drives import DriveHierarchy
+    from empathy import EmpathyLayer
     from memory import MemoryGraph
     from hypothesis import HypothesisEngine
 
@@ -33,6 +35,7 @@ DRIVES_FILENAME = "drives.json"
 MEMORY_FILENAME = "memory.json"
 HYPOTHESIS_FILENAME = "hypothesis.json"
 DEVELOPMENTAL_FILENAME = "developmental.json"
+EMPATHY_FILENAME = "empathy.json"
 
 PRIMITIVE_STAGE_MAX = 0.15
 ENVIRONMENTAL_STAGE_MAX = 0.30
@@ -64,8 +67,6 @@ DRIVE_UNKNOWN_BASE = 0.25
 DRIVE_STABILITY_NEGATIVE_BASE = 0.5
 DRIVE_STABILITY_NEGATIVE_SCALE = 0.5
 DISCOVERY_MEMORY_VALENCE = 0.25
-SOCIAL_RELATIONSHIP_DEPTH_PER_CREATURE = 0.47
-SOCIAL_ENTITY_PREDICTION_GAP_SIGNAL = 0.72
 MASTERY_COMPETENCE_PER_CONFIRMATION = 0.15
 MASTERY_DISCOVERY_PULL_SIGNAL = 0.4
 ENTITY_MEMORY_LINK_LIMIT = 3
@@ -84,6 +85,7 @@ IDENTITY_MEMORY_EDGE_TYPES: frozenset[str] = frozenset(
         MEMORY_EDGE_TYPE_CAUSED_BY,
     }
 )
+EMPATHY_SOCIAL_SIGNAL_NAMES: tuple[str, str] = ("relationship_depth", "entity_prediction_gap")
 
 memory_module.VALID_EDGE_TYPES = frozenset(set(memory_module.VALID_EDGE_TYPES) | IDENTITY_MEMORY_EDGE_TYPES)
 
@@ -193,6 +195,7 @@ class Identity:
         self.data_dir = Path(data_dir)
         self.drives = DriveHierarchy(developmental_stage=MIN_STAGE)
         self.memory = MemoryGraph(storage_path=self.data_dir / MEMORY_FILENAME)
+        self.empathy = EmpathyLayer(self.memory, developmental_stage=MIN_STAGE)
         self.hypothesis_engine = HypothesisEngine(drives=self.drives)
         self.developmental = DevelopmentalState(
             stage=MIN_STAGE,
@@ -220,6 +223,7 @@ class Identity:
         drives_path = self._component_path(DRIVES_FILENAME)
         memory_path = self._component_path(MEMORY_FILENAME)
         hypothesis_path = self._component_path(HYPOTHESIS_FILENAME)
+        empathy_path = self._component_path(EMPATHY_FILENAME)
 
         if all(path.exists() for path in (meta_path, developmental_path, drives_path, memory_path, hypothesis_path)):
             meta = self._read_json(meta_path)
@@ -232,10 +236,15 @@ class Identity:
             self.developmental = DevelopmentalState(**self._read_json(developmental_path))
             self.drives = DriveHierarchy.from_dict(self._read_json(drives_path))
             self.memory = MemoryGraph.from_dict(self._read_json(memory_path), storage_path=memory_path)
+            if empathy_path.exists():
+                self.empathy = EmpathyLayer.from_dict(self._read_json(empathy_path), memory=self.memory)
+            else:
+                self.empathy = EmpathyLayer(self.memory, developmental_stage=self.developmental.stage)
             self.hypothesis_engine = HypothesisEngine.from_dict(self._read_json(hypothesis_path), drives=self.drives)
         else:
             self.drives = DriveHierarchy(developmental_stage=MIN_STAGE)
             self.memory = MemoryGraph(storage_path=memory_path)
+            self.empathy = EmpathyLayer(self.memory, developmental_stage=MIN_STAGE)
             self.hypothesis_engine = HypothesisEngine(drives=self.drives)
             self.developmental = DevelopmentalState(
                 stage=MIN_STAGE,
@@ -249,6 +258,8 @@ class Identity:
 
         self.drives.developmental_stage = self.developmental.stage
         self.drives = DriveHierarchy.from_dict(self.drives.to_dict())
+        self.empathy.memory = self.memory
+        self.empathy.update_developmental_stage(self.developmental.stage)
         self.hypothesis_engine.drives = self.drives
         self._known_confirmed_ids = {hypothesis.id for hypothesis in self.hypothesis_engine.get_confirmed()}
         self.last_wake_at = time.time()
@@ -280,15 +291,29 @@ class Identity:
         )
         self._write_json(self._component_path(DRIVES_FILENAME), self.drives.to_dict())
         self._write_json(self._component_path(MEMORY_FILENAME), self.memory.to_dict())
+        self._write_json(self._component_path(EMPATHY_FILENAME), self.empathy.to_dict())
         self._write_json(self._component_path(HYPOTHESIS_FILENAME), self.hypothesis_engine.to_dict())
         self._write_json(self._component_path(DEVELOPMENTAL_FILENAME), asdict(self.developmental))
 
     def perceive(self, observation: dict[str, Any]) -> None:
         """Process a world observation through drives, hypotheses, and memory."""
 
-        social_updates = self._social_drive_updates_from_observation(observation)
-        self._last_social_updates = dict(social_updates)
+        self.empathy.update_developmental_stage(self.developmental.stage)
         observation_for_hypothesis = dict(observation)
+        for signal_name in EMPATHY_SOCIAL_SIGNAL_NAMES:
+            observation_for_hypothesis.pop(signal_name, None)
+        entities = observation.get("entities", [])
+        if isinstance(entities, list):
+            for entity in entities:
+                if not isinstance(entity, dict):
+                    continue
+                self.empathy.observe_entity(
+                    entity=entity,
+                    developmental_stage=self.developmental.stage,
+                )
+        social_updates = self.empathy.get_social_drive_signals()
+        self._last_social_updates = dict(social_updates)
+        observation_for_hypothesis.update(social_updates)
         if "novelty_hint" in observation:
             observation_for_hypothesis["novelty_hint"] = observation["novelty_hint"]
         stored_observation = self.hypothesis_engine.observe(observation_for_hypothesis)
@@ -358,6 +383,28 @@ class Identity:
         clamped_valence = _clamp(valence, MIN_VALENCE, MAX_VALENCE)
         dominant_before = self.current_drive()
         entity_ids = self._entity_ids_from_payload(outcome_payload)
+        affected_entities = outcome_payload.get("entities_affected", [])
+        if isinstance(affected_entities, list):
+            for entity in affected_entities:
+                if not isinstance(entity, dict):
+                    continue
+                self.empathy.observe_entity(
+                    entity=entity,
+                    itera_action=str(outcome_payload.get("action", "")) or None,
+                    outcome={
+                        "success": outcome_payload.get("success"),
+                        "timestamp": outcome_payload.get("timestamp", time.time()),
+                        "valence": clamped_valence,
+                    },
+                    developmental_stage=self.developmental.stage,
+                )
+                raw_entity_id = entity.get("id")
+                if raw_entity_id is None:
+                    continue
+                self.empathy.update_relationship(
+                    entity_id=str(raw_entity_id),
+                    valence_delta=clamped_valence * 0.5,
+                )
 
         tags = [dominant_before.lower(), "outcome"]
         tags.extend(entity_ids)
@@ -395,6 +442,7 @@ class Identity:
 
         self.developmental.advance(confirmed_delta=confirmed_delta, cycle_delta=1)
         self.drives.advance_developmental_stage(self.developmental.stage - self.drives.developmental_stage)
+        self.empathy.update_developmental_stage(self.developmental.stage)
         self._known_confirmed_ids = confirmed_after
 
         if clamped_valence > DISCOVERY_EDGE_VALENCE_THRESHOLD:
@@ -424,7 +472,8 @@ class Identity:
             f"Dominant drive: {dominant_drive} ({dominant_weight:.3f}). "
             f"Recent salient memories: {memory_ids}. "
             f"Active hypotheses: {active_hypotheses}; confirmed: {confirmed}. "
-            f"Discoveries carried forward: {len(self.developmental.discoveries)}."
+            f"Discoveries carried forward: {len(self.developmental.discoveries)}. "
+            f"Empathy: {self.empathy.summary()}."
         )
 
     def add_discovery(self, name: str, description: str) -> None:
@@ -467,6 +516,7 @@ class Identity:
             },
             "drives": self.drives.to_dict(),
             "memory": self.memory.to_dict(),
+            "empathy": self.empathy.to_dict(),
             "hypothesis": self.hypothesis_engine.to_dict(),
             "developmental": asdict(self.developmental),
         }
@@ -490,6 +540,11 @@ class Identity:
         identity.developmental = DevelopmentalState(**dict(data.get("developmental", {})))
         identity.drives = DriveHierarchy.from_dict(dict(data.get("drives", {})))
         identity.memory = MemoryGraph.from_dict(dict(data.get("memory", {})), storage_path=identity.data_dir / MEMORY_FILENAME)
+        identity.empathy = EmpathyLayer.from_dict(
+            dict(data.get("empathy", {})),
+            memory=identity.memory,
+        )
+        identity.empathy.update_developmental_stage(identity.developmental.stage)
         identity.hypothesis_engine = HypothesisEngine.from_dict(dict(data.get("hypothesis", {})), drives=identity.drives)
         identity._known_confirmed_ids = {hypothesis.id for hypothesis in identity.hypothesis_engine.get_confirmed()}
         return identity
@@ -582,72 +637,6 @@ class Identity:
             "resource_scarcity": min(1.0, DRIVE_SCARCITY_BASE + magnitude),
             "unknown_territory": min(1.0, DRIVE_UNKNOWN_BASE + magnitude),
             "environmental_stability": max(0.0, DRIVE_STABILITY_NEGATIVE_BASE - (magnitude * DRIVE_STABILITY_NEGATIVE_SCALE)),
-        }
-
-    def _social_drive_updates_from_observation(self, observation: dict[str, Any]) -> dict[str, float]:
-        """Extract explicit social-drive updates from visible creature entities."""
-
-        creatures = self._creature_entities(observation)
-        creature_count = len(creatures)
-        if creature_count <= 0:
-            return {}
-        average_reactivity = sum(
-            float(creature.get("properties", {}).get("reactivity", SOCIAL_ENTITY_PREDICTION_GAP_SIGNAL))
-            for creature in creatures
-        ) / float(creature_count)
-        return {
-            "relationship_depth": min(1.0, creature_count * SOCIAL_RELATIONSHIP_DEPTH_PER_CREATURE),
-            "entity_prediction_gap": max(SOCIAL_ENTITY_PREDICTION_GAP_SIGNAL, average_reactivity),
-        }
-
-    def _creature_entities(self, observation: dict[str, Any]) -> list[dict[str, Any]]:
-        """Return creature entities from an observation payload."""
-
-        entities = observation.get("entities", [])
-        if not isinstance(entities, list):
-            return []
-        return [
-            entity
-            for entity in entities
-            if isinstance(entity, dict) and "creature" in entity.get("tags", [])
-        ]
-
-    def _creature_observation_features(self, observation: dict[str, Any]) -> dict[str, float]:
-        """Derive dynamic creature features that keep observation novelty alive."""
-
-        creatures = self._creature_entities(observation)
-        creature_count = len(creatures)
-        if creature_count <= 0:
-            return {}
-
-        properties = [dict(creature.get("properties", {})) for creature in creatures]
-        positions = [
-            creature.get("position", (0, 0))
-            for creature in creatures
-            if isinstance(creature.get("position"), tuple) and len(creature.get("position")) == 2
-        ]
-        mean_x = 0.0
-        mean_y = 0.0
-        if positions:
-            mean_x = sum(float(position[0]) for position in positions) / float(len(positions))
-            mean_y = sum(float(position[1]) for position in positions) / float(len(positions))
-
-        return {
-            "visible_creature_count": float(creature_count),
-            "creature_mean_x": mean_x,
-            "creature_mean_y": mean_y,
-            "creature_reactivity_average": sum(
-                float(item.get("reactivity", SOCIAL_ENTITY_PREDICTION_GAP_SIGNAL))
-                for item in properties
-            ) / float(len(properties)),
-            "creature_temperature_average": sum(
-                float(item.get("temperature", 0.0))
-                for item in properties
-            ) / float(len(properties)),
-            "creature_brightness_average": sum(
-                float(item.get("brightness", 0.0))
-                for item in properties
-            ) / float(len(properties)),
         }
 
     def _mastery_drive_updates(self, confirmed_count: int) -> dict[str, float]:

@@ -38,6 +38,7 @@ DEFAULT_FALLBACK_DRIVE_SOURCE = "MASTERY"
 DEFAULT_FALLBACK_RADIUS = 1
 ENTITY_PREDICTION_GAP_NORMALIZER = 5.0
 TOP_MEMORY_LIMIT = 3
+DEFAULT_DEMO_MAX_CYCLES = 200
 
 DOMAIN_KEYWORDS: dict[str, tuple[str, ...]] = {
     "physical": ("move", "push", "heat", "cool", "combine", "rock", "water", "fire", "stone"),
@@ -74,6 +75,7 @@ class SimResult:
     capabilities_emerged: int
     memory_nodes: int
     termination_reason: str
+    entities_modeled: int = 0
     emerged_capability_names: list[str] = field(default_factory=list)
 
 
@@ -170,6 +172,7 @@ class FastSim:
             capabilities_emerged=len(capability_summaries),
             memory_nodes=self.identity.memory.summary()["node_count"],
             termination_reason=termination_reason,
+            entities_modeled=self.identity.empathy.known_entity_count(),
             emerged_capability_names=[str(item["name"]) for item in capability_summaries],
         )
         if self.config.verbose:
@@ -414,7 +417,10 @@ class FastSim:
             f"{result.hypotheses_confirmed} confirmed"
         )
         print(f"Memory nodes: {result.memory_nodes}")
+        print(f"Entities modeled: {result.entities_modeled}")
         print(f"Dominant drive at end: {self.identity.current_drive()}")
+        print("Empathy summary:")
+        print(self.identity.empathy.summary())
         print()
         print("=== CAPABILITIES EMERGED ===")
         if not capability_summaries:
@@ -443,7 +449,7 @@ class FastSim:
 if __name__ == "__main__":
     # Clear data/identity between major test runs to avoid carrying large saved sessions forward.
     demo_data_dir = str(Path(DEFAULT_DATA_DIR) / f"fast_sim_demo_{int(time.time())}")
-    config = SimConfig(max_cycles=50, verbose=True, data_dir=demo_data_dir)
+    config = SimConfig(max_cycles=DEFAULT_DEMO_MAX_CYCLES, verbose=True, data_dir=demo_data_dir)
     sim = FastSim(config=config)
     sim.setup()
     result = sim.run()
