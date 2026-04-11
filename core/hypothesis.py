@@ -8,6 +8,7 @@ investigating next.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from enum import Enum
 import math
 import time
 from typing import Any
@@ -17,6 +18,17 @@ try:
     from core.drives import DriveHierarchy
 except ModuleNotFoundError:  # pragma: no cover - convenience for direct execution
     from drives import DriveHierarchy
+
+
+class HypothesisType(str, Enum):
+    """Supported hypothesis categories."""
+
+    PATTERN = "pattern"
+    CAUSAL = "causal"
+    COMPARATIVE = "comparative"
+    PREDICTIVE = "predictive"
+    RELATIONAL = "relational"
+
 
 MIN_SIGNAL_VALUE = 0.0
 MAX_SIGNAL_VALUE = 1.0
@@ -44,6 +56,10 @@ TRIM_DRIVE_WEIGHT = 0.5
 TRIM_NOVELTY_WEIGHT = 0.3
 TRIM_CONFIDENCE_WEIGHT = 0.2
 CONFIDENCE_MIDPOINT = (MIN_CONFIDENCE + MAX_CONFIDENCE) / 2.0
+HYPOTHESIS_PATTERN_NOVELTY_THRESHOLD = 0.3
+HYPOTHESIS_SOCIAL_RELATION_NOVELTY_THRESHOLD = 0.5
+SINGLE_ENTITY_COUNT = 1
+MULTI_ENTITY_THRESHOLD = 2
 
 DRIVE_TEST_INTENTS: dict[str, str] = {
     "SURVIVAL": "probe immediate risk or resource conditions",
@@ -102,6 +118,7 @@ class Hypothesis:
     test_count: int
     status: str
     valence: float
+    hypothesis_type: HypothesisType = HypothesisType.PATTERN
 
 
 @dataclass
@@ -256,6 +273,89 @@ class HypothesisEngine:
 
         return focus_keys
 
+    def _observation_entities(self, observation: Observation) -> list[dict[str, Any]]:
+        """Return normalized entity dictionaries from an observation."""
+
+        entities = observation.data.get("entities", [])
+        if not isinstance(entities, list):
+            return []
+        return [entity for entity in entities if isinstance(entity, dict)]
+
+    def _describe_observation_entities(self, observation: Observation) -> str:
+        """Return a readable entity description for hypothesis statements."""
+
+        names = [
+            str(entity.get("name") or entity.get("id") or f"entity_{index + 1}")
+            for index, entity in enumerate(self._observation_entities(observation))
+        ]
+        if not names:
+            return "the current conditions"
+        if len(names) == 1:
+            return names[0]
+        if len(names) == 2:
+            return f"{names[0]} and {names[1]}"
+        return f"{', '.join(names[:-1])}, and {names[-1]}"
+
+    def _select_hypothesis_type(self, observation: Observation, drive_source: str) -> HypothesisType:
+        """Choose the hypothesis category that best fits an observation."""
+
+        entity_count = len(self._observation_entities(observation))
+        if observation.novelty_score < HYPOTHESIS_PATTERN_NOVELTY_THRESHOLD:
+            return HypothesisType.PATTERN
+        if entity_count == 0:
+            return HypothesisType.PATTERN
+        if entity_count == SINGLE_ENTITY_COUNT and drive_source == "SOCIAL":
+            return HypothesisType.PREDICTIVE
+        if entity_count == SINGLE_ENTITY_COUNT and self.test_results:
+            return HypothesisType.CAUSAL
+        if entity_count >= MULTI_ENTITY_THRESHOLD:
+            if drive_source == "SOCIAL":
+                # RELATIONAL requires repeated entity encounters to lower novelty below the
+                # threshold — a fresh single run may never reach it. On persisted identity
+                # with prior relationship history, novelty settles and RELATIONAL fires.
+                if observation.novelty_score >= HYPOTHESIS_SOCIAL_RELATION_NOVELTY_THRESHOLD:
+                    return HypothesisType.PREDICTIVE
+                return HypothesisType.RELATIONAL
+            return HypothesisType.COMPARATIVE
+        return HypothesisType.PREDICTIVE
+
+    def _build_hypothesis_statement(
+        self,
+        hypothesis_type: HypothesisType,
+        observation: Observation,
+        focus_keys: list[str],
+        drive_source: str,
+    ) -> str:
+        """Return a readable statement matched to a selected hypothesis type."""
+
+        focus_fragment = ", ".join(focus_keys) if focus_keys else "the current signals"
+        entity_fragment = self._describe_observation_entities(observation)
+
+        if hypothesis_type == HypothesisType.CAUSAL:
+            return (
+                f"If Itera engages with {entity_fragment}, changes in {focus_fragment} should follow "
+                f"under the current {drive_source} concern."
+            )
+        if hypothesis_type == HypothesisType.COMPARATIVE:
+            return (
+                f"Comparing {entity_fragment}, Itera expects different behavior in {focus_fragment} "
+                f"under the current {drive_source} concern."
+            )
+        if hypothesis_type == HypothesisType.RELATIONAL:
+            return (
+                f"Itera expects the relationship among {entity_fragment} to shape {focus_fragment} "
+                f"under the current {drive_source} concern."
+            )
+        if hypothesis_type == HypothesisType.PREDICTIVE:
+            return (
+                f"When {entity_fragment} is present, future observations should show {focus_fragment} "
+                f"in a predictable way for the current {drive_source} concern."
+            )
+        return (
+            f"Itera expects {focus_fragment} to repeat in a stable pattern under the current "
+            f"{drive_source} concern."
+        )
+
     def observe(self, raw_observation: dict[str, Any]) -> Observation:
         """Process a raw world observation, score novelty, and store it."""
 
@@ -293,10 +393,8 @@ class HypothesisEngine:
             return None
 
         predicted_outcome = {key: observation.data[key] for key in focus_keys if key in observation.data}
-        statement = (
-            f"If Itera investigates {', '.join(focus_keys)}, future observations should show "
-            f"a stable pattern consistent with the current {drive_name} concern."
-        )
+        hypothesis_type = self._select_hypothesis_type(observation, drive_name)
+        statement = self._build_hypothesis_statement(hypothesis_type, observation, focus_keys, drive_name)
 
         hypothesis = Hypothesis(
             id=str(uuid4()),
@@ -309,6 +407,7 @@ class HypothesisEngine:
             test_count=0,
             status="pending",
             valence=0.0,
+            hypothesis_type=hypothesis_type,
         )
         self.hypotheses[hypothesis.id] = hypothesis
         self._trim_pending_hypotheses()
@@ -455,6 +554,15 @@ class HypothesisEngine:
             if hypothesis.status == "refuted"
         ]
 
+    def get_hypotheses_by_type(self, hypothesis_type: HypothesisType) -> list[Hypothesis]:
+        """Return all stored hypotheses of a given type."""
+
+        return [
+            hypothesis
+            for hypothesis in self.hypotheses.values()
+            if hypothesis.hypothesis_type == hypothesis_type
+        ]
+
     def to_dict(self) -> dict[str, Any]:
         """Serialize the full hypothesis-engine state."""
 
@@ -493,6 +601,7 @@ class HypothesisEngine:
         ]
 
         for hypothesis_id, hypothesis_data in data.get("hypotheses", {}).items():
+            raw_hypothesis_type = hypothesis_data.get("hypothesis_type", HypothesisType.PATTERN.value)
             engine.hypotheses[hypothesis_id] = Hypothesis(
                 id=str(hypothesis_data["id"]),
                 created_at=float(hypothesis_data["created_at"]),
@@ -504,6 +613,11 @@ class HypothesisEngine:
                 test_count=int(hypothesis_data["test_count"]),
                 status=str(hypothesis_data["status"]),
                 valence=_clamp(float(hypothesis_data["valence"]), MIN_VALENCE, MAX_VALENCE),
+                hypothesis_type=(
+                    raw_hypothesis_type
+                    if isinstance(raw_hypothesis_type, HypothesisType)
+                    else HypothesisType(str(raw_hypothesis_type))
+                ),
             )
 
         engine.test_results = [
@@ -525,11 +639,15 @@ class HypothesisEngine:
         active = len(self.get_active())
         confirmed = len(self.get_confirmed())
         refuted = len(self.get_refuted())
+        type_counts = ", ".join(
+            f"{hypothesis_type.value}={len(self.get_hypotheses_by_type(hypothesis_type))}"
+            for hypothesis_type in HypothesisType
+        )
         next_hypothesis = self.select_next()
         next_line = "none"
         if next_hypothesis is not None:
             next_line = (
-                f"{next_hypothesis.id} [{next_hypothesis.drive_source}] "
+                f"{next_hypothesis.id} [{next_hypothesis.drive_source}/{next_hypothesis.hypothesis_type.value}] "
                 f"confidence={next_hypothesis.confidence:.2f}"
             )
 
@@ -539,6 +657,7 @@ class HypothesisEngine:
                 f"Active hypotheses: {active}",
                 f"Confirmed hypotheses: {confirmed}",
                 f"Refuted hypotheses: {refuted}",
+                f"Hypothesis types: {type_counts}",
                 f"Stored test results: {len(self.test_results)}",
                 f"Next hypothesis: {next_line}",
             ]

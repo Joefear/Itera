@@ -15,10 +15,12 @@ import time
 from typing import Any
 
 try:
+    import core.memory as memory_module
     from core.drives import DriveHierarchy
     from core.memory import MemoryGraph
     from core.hypothesis import HypothesisEngine
 except ModuleNotFoundError:  # pragma: no cover - convenience for direct execution
+    import memory as memory_module
     from drives import DriveHierarchy
     from memory import MemoryGraph
     from hypothesis import HypothesisEngine
@@ -51,6 +53,7 @@ MIN_VALENCE = -1.0
 MAX_VALENCE = 1.0
 POSITIVE_VALENCE_DISCOVERY_THRESHOLD = 0.35
 POSITIVE_VALENCE_MASTERY_THRESHOLD = 0.3
+DISCOVERY_EDGE_VALENCE_THRESHOLD = 0.5
 DRIVE_COMPETENCE_BASE = 0.25
 DRIVE_DISCOVERY_BASE = 0.35
 DRIVE_STABILITY_POSITIVE_BASE = 0.4
@@ -65,6 +68,24 @@ SOCIAL_RELATIONSHIP_DEPTH_PER_CREATURE = 0.47
 SOCIAL_ENTITY_PREDICTION_GAP_SIGNAL = 0.72
 MASTERY_COMPETENCE_PER_CONFIRMATION = 0.15
 MASTERY_DISCOVERY_PULL_SIGNAL = 0.4
+ENTITY_MEMORY_LINK_LIMIT = 3
+MEMORY_EDGE_TYPE_TESTS = "tests"
+MEMORY_EDGE_TYPE_CONFIRMED_BY = "confirmed_by"
+MEMORY_EDGE_TYPE_RELATES_TO = "relates_to"
+MEMORY_EDGE_TYPE_CAUSED_BY = "caused_by"
+MEMORY_EDGE_WEIGHT_TESTS = 0.7
+MEMORY_EDGE_WEIGHT_CONFIRMED_BY = 0.9
+MEMORY_EDGE_WEIGHT_RELATES_TO = 0.5
+MEMORY_EDGE_WEIGHT_CAUSED_BY = 0.85
+IDENTITY_MEMORY_EDGE_TYPES: frozenset[str] = frozenset(
+    {
+        MEMORY_EDGE_TYPE_TESTS,
+        MEMORY_EDGE_TYPE_CONFIRMED_BY,
+        MEMORY_EDGE_TYPE_CAUSED_BY,
+    }
+)
+
+memory_module.VALID_EDGE_TYPES = frozenset(set(memory_module.VALID_EDGE_TYPES) | IDENTITY_MEMORY_EDGE_TYPES)
 
 
 def _clamp(value: float, minimum: float, maximum: float) -> float:
@@ -285,6 +306,7 @@ class Identity:
 
         tags = [dominant_drive.lower(), "observation", stored_observation.drive_context.get("dominant_drive", dominant_drive).lower()]
         tags.extend(str(key).lower() for key in stored_observation.data.keys())
+        tags.extend(self._entity_ids_from_payload(stored_observation.data))
         if generated is not None:
             tags.append(generated.id)
             tags.append("hypothesis")
@@ -335,9 +357,13 @@ class Identity:
         outcome_payload = dict(outcome)
         clamped_valence = _clamp(valence, MIN_VALENCE, MAX_VALENCE)
         dominant_before = self.current_drive()
+        entity_ids = self._entity_ids_from_payload(outcome_payload)
 
         tags = [dominant_before.lower(), "outcome"]
-        if "hypothesis_id" in outcome_payload:
+        tags.extend(entity_ids)
+        if clamped_valence > DISCOVERY_EDGE_VALENCE_THRESHOLD:
+            tags.append("discovery")
+        if outcome_payload.get("hypothesis_id") is not None:
             tags.append(str(outcome_payload["hypothesis_id"]))
         memory_node = self.memory.absorb_outcome(outcome_payload, clamped_valence, tags=tags)
 
@@ -371,8 +397,17 @@ class Identity:
         self.drives.advance_developmental_stage(self.developmental.stage - self.drives.developmental_stage)
         self._known_confirmed_ids = confirmed_after
 
-        if clamped_valence >= POSITIVE_VALENCE_DISCOVERY_THRESHOLD and "discovery" in memory_node.tags:
+        if clamped_valence > DISCOVERY_EDGE_VALENCE_THRESHOLD:
+            discovery_name = str(outcome_payload.get("discovery") or f"{outcome_payload.get('action', 'outcome')} discovery")
+            self.add_discovery(discovery_name, json.dumps(outcome_payload, sort_keys=True))
+        elif clamped_valence >= POSITIVE_VALENCE_DISCOVERY_THRESHOLD and "discovery" in memory_node.tags:
             self.add_discovery(str(outcome_payload.get("discovery", "unnamed discovery")), json.dumps(outcome_payload, sort_keys=True))
+
+        self._create_memory_edges(
+            outcome_node_id=memory_node.id,
+            hypothesis_id=outcome_payload.get("hypothesis_id"),
+            entity_ids=entity_ids,
+        )
 
     def reflect(self) -> str:
         """Generate a brief internal self-reflection summary."""
@@ -622,6 +657,147 @@ class Identity:
             "competence_growth": min(1.0, max(0, int(confirmed_count)) * MASTERY_COMPETENCE_PER_CONFIRMATION),
             "discovery_pull": MASTERY_DISCOVERY_PULL_SIGNAL,
         }
+
+    def _entity_ids_from_payload(self, payload: dict[str, Any]) -> list[str]:
+        """Extract stable entity identifiers from an observation or outcome payload."""
+
+        entity_ids: list[str] = []
+        seen: set[str] = set()
+
+        for key in ("entities", "entities_affected"):
+            entities = payload.get(key, [])
+            if not isinstance(entities, list):
+                continue
+            for entity in entities:
+                if not isinstance(entity, dict) or "id" not in entity:
+                    continue
+                entity_id = str(entity["id"]).strip().lower()
+                if not entity_id or entity_id in seen:
+                    continue
+                entity_ids.append(entity_id)
+                seen.add(entity_id)
+
+        parameters = payload.get("parameters", {})
+        if isinstance(parameters, dict):
+            for parameter_key in ("object_id", "entity_id"):
+                raw_value = parameters.get(parameter_key)
+                if raw_value is None:
+                    continue
+                entity_id = str(raw_value).strip().lower()
+                if not entity_id or entity_id in seen:
+                    continue
+                entity_ids.append(entity_id)
+                seen.add(entity_id)
+
+        return entity_ids
+
+    def _safe_connect_memory_nodes(
+        self,
+        source_id: str,
+        target_id: str,
+        edge_type: str,
+        weight: float,
+        valence: float,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Create a memory edge when both nodes exist and no matching edge is already stored."""
+
+        if source_id not in self.memory.nodes or target_id not in self.memory.nodes:
+            return
+
+        for edge in self.memory.edges.values():
+            if edge.source_id == source_id and edge.target_id == target_id and edge.edge_type == edge_type:
+                return
+
+        try:
+            self.memory.connect(
+                source_id=source_id,
+                target_id=target_id,
+                edge_type=edge_type,
+                weight=weight,
+                valence=valence,
+                metadata={} if metadata is None else dict(metadata),
+            )
+        except (KeyError, ValueError):
+            return
+
+    def _create_memory_edges(
+        self,
+        outcome_node_id: str,
+        hypothesis_id: Any | None,
+        entity_ids: list[str],
+    ) -> None:
+        """Create defensive graph edges that connect a new outcome to related memories."""
+
+        outcome_node = self.memory.nodes.get(str(outcome_node_id))
+        if outcome_node is None:
+            return
+
+        normalized_hypothesis_id = None if hypothesis_id is None else str(hypothesis_id).strip().lower()
+        if normalized_hypothesis_id:
+            observation_nodes = [
+                node
+                for node in self.memory.nodes.values()
+                if node.id != outcome_node.id
+                and node.node_type == "experience"
+                and "observation" in node.tags
+                and normalized_hypothesis_id in node.tags
+            ]
+            observation_nodes.sort(key=lambda node: node.created_at, reverse=True)
+            if observation_nodes:
+                hypothesis_observation = observation_nodes[0]
+                self._safe_connect_memory_nodes(
+                    source_id=outcome_node.id,
+                    target_id=hypothesis_observation.id,
+                    edge_type=MEMORY_EDGE_TYPE_TESTS,
+                    weight=MEMORY_EDGE_WEIGHT_TESTS,
+                    valence=outcome_node.valence,
+                    metadata={"hypothesis_id": normalized_hypothesis_id},
+                )
+                hypothesis = self.hypothesis_engine.hypotheses.get(normalized_hypothesis_id)
+                if hypothesis is not None and hypothesis.status == "confirmed":
+                    self._safe_connect_memory_nodes(
+                        source_id=hypothesis_observation.id,
+                        target_id=outcome_node.id,
+                        edge_type=MEMORY_EDGE_TYPE_CONFIRMED_BY,
+                        weight=MEMORY_EDGE_WEIGHT_CONFIRMED_BY,
+                        valence=outcome_node.valence,
+                        metadata={"hypothesis_id": normalized_hypothesis_id},
+                    )
+
+        for entity_id in entity_ids:
+            recent_experiences = [
+                node
+                for node in self.memory.nodes.values()
+                if node.id != outcome_node.id and node.node_type == "experience" and entity_id in node.tags
+            ]
+            recent_experiences.sort(key=lambda node: node.created_at, reverse=True)
+            for related_node in recent_experiences[:ENTITY_MEMORY_LINK_LIMIT]:
+                self._safe_connect_memory_nodes(
+                    source_id=outcome_node.id,
+                    target_id=related_node.id,
+                    edge_type=MEMORY_EDGE_TYPE_RELATES_TO,
+                    weight=MEMORY_EDGE_WEIGHT_RELATES_TO,
+                    valence=outcome_node.valence,
+                    metadata={"entity_id": entity_id},
+                )
+
+        if outcome_node.valence > DISCOVERY_EDGE_VALENCE_THRESHOLD:
+            discovery_nodes = [
+                node
+                for node in self.memory.nodes.values()
+                if node.id != outcome_node.id and node.node_type == "discovery" and node.created_at >= outcome_node.created_at
+            ]
+            discovery_nodes.sort(key=lambda node: node.created_at, reverse=True)
+            for discovery_node in discovery_nodes:
+                self._safe_connect_memory_nodes(
+                    source_id=discovery_node.id,
+                    target_id=outcome_node.id,
+                    edge_type=MEMORY_EDGE_TYPE_CAUSED_BY,
+                    weight=MEMORY_EDGE_WEIGHT_CAUSED_BY,
+                    valence=outcome_node.valence,
+                    metadata={"linked_by": "discovery_valence"},
+                )
 
 
 if __name__ == "__main__":
