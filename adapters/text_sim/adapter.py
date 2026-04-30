@@ -55,10 +55,12 @@ ACTION_PUSH = "push"
 ACTION_HEAT = "heat"
 ACTION_COOL = "cool"
 ACTION_COMBINE = "combine"
+ACTION_MEDITATE = "meditate"
 
 ACTION_CATEGORY_MOVEMENT = "movement"
 ACTION_CATEGORY_EXPLORATION = "exploration"
 ACTION_CATEGORY_INTERACTION = "interaction"
+ACTION_CATEGORY_CULTIVATION = "cultivation"
 
 PARAMETER_DIRECTION = "direction"
 PARAMETER_OBJECT_ID = "object_id"
@@ -83,6 +85,8 @@ COOL_MASTERY_ALIGNMENT = 0.7
 COOL_SECURITY_ALIGNMENT = 0.3
 COMBINE_MASTERY_ALIGNMENT = 0.9
 COMBINE_ACTUALIZATION_ALIGNMENT = 0.4
+MEDITATE_ACTUALIZATION_ALIGNMENT = 0.9
+MEDITATE_SECURITY_ALIGNMENT = 0.3
 
 MOVE_ACTION_COST = 0.1
 EXAMINE_ACTION_COST = 0.05
@@ -90,6 +94,8 @@ PUSH_ACTION_COST = 0.2
 HEAT_ACTION_COST = 0.3
 COOL_ACTION_COST = 0.3
 COMBINE_ACTION_COST = 0.4
+MEDITATE_ACTION_COST = 0.0
+MEDITATE_BASE_VALENCE = 0.1
 
 
 def _clamp(value: float, minimum: float, maximum: float) -> float:
@@ -128,6 +134,7 @@ class TextSimAdapter(EnvironmentInterface):
             self_state={
                 "position": list(state["itera_position"]),
                 "energy": TEXT_SIM_SELF_ENERGY,
+                "chi": self.world.get_itera_chi(),
             },
             world_context={},
             time_of_day=time_of_day,
@@ -149,6 +156,9 @@ class TextSimAdapter(EnvironmentInterface):
                 "direction": direction,
                 "position": self.world.itera_position,
             }
+        elif action.name == ACTION_MEDITATE:
+            outcome_details = self.world.interact(None, ACTION_MEDITATE)
+            success = bool(outcome_details.get("success", False))
         elif action.name in {ACTION_EXAMINE, ACTION_PUSH, ACTION_HEAT, ACTION_COOL, ACTION_COMBINE}:
             object_id = str(action.parameters.get(PARAMETER_OBJECT_ID, ""))
             outcome_details = self.world.interact(object_id, action.name)
@@ -178,7 +188,7 @@ class TextSimAdapter(EnvironmentInterface):
     def get_available_actions(self) -> list[ActionDefinition]:
         """Return all valid structured actions in the current local context."""
 
-        actions = [self._move_action_definition()]
+        actions = [self._move_action_definition(), self._meditate_action_definition()]
         nearby = self.world.get_nearby(self.world.itera_position, radius=DEFAULT_NEARBY_RADIUS)
         if nearby:
             actions.extend(
@@ -205,6 +215,21 @@ class TextSimAdapter(EnvironmentInterface):
             },
             cost=MOVE_ACTION_COST,
             description="Move Itera one cell in a cardinal direction.",
+        )
+
+    def _meditate_action_definition(self) -> ActionDefinition:
+        """Build the current meditate action definition."""
+
+        return ActionDefinition(
+            name=ACTION_MEDITATE,
+            category=ACTION_CATEGORY_CULTIVATION,
+            parameters={},
+            drive_alignment={
+                DRIVE_ACTUALIZATION: MEDITATE_ACTUALIZATION_ALIGNMENT,
+                DRIVE_SECURITY: MEDITATE_SECURITY_ALIGNMENT,
+            },
+            cost=MEDITATE_ACTION_COST,
+            description="Enter a meditative state to cultivate chi.",
         )
 
     def _examine_action_definition(self) -> ActionDefinition:
@@ -420,6 +445,14 @@ class TextSimAdapter(EnvironmentInterface):
             valence = novelty * POSITIVE_NOVELTY_VALENCE
         elif action.name == ACTION_EXAMINE:
             valence = min(MAX_VALENCE, (novelty * POSITIVE_NOVELTY_VALENCE) + EXAMINE_NOVELTY_BONUS)
+        elif action.name == ACTION_MEDITATE:
+            chi_before = float(outcome_details.get("itera_chi_before", 0.0))
+            chi_after = float(outcome_details.get("itera_chi_after", 0.0))
+            valence = _clamp(
+                (chi_after - chi_before) + MEDITATE_BASE_VALENCE,
+                MIN_VALENCE,
+                MAX_VALENCE,
+            )
         else:
             before = outcome_details.get("before", {})
             after = outcome_details.get("after", {})

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import random
 from typing import Any
 from uuid import uuid4
 
@@ -24,6 +25,8 @@ CREATURE_TEMPERATURE = 0.45
 CREATURE_MASS = 0.5
 CREATURE_BRIGHTNESS = 0.35
 CREATURE_REACTIVITY = 0.85
+CREATURE_CHI_MIN = 0.3
+CREATURE_CHI_MAX = 0.7
 DEPOSIT_MASS = 0.75
 DEPOSIT_HARDNESS = 0.8
 DEPOSIT_BRIGHTNESS = 0.25
@@ -124,9 +127,10 @@ def make_water(position: tuple[int, int]) -> WorldObject:
     )
 
 
-def make_creature(position: tuple[int, int]) -> WorldObject:
+def make_creature(position: tuple[int, int], rng: random.Random | None = None) -> WorldObject:
     """Create a reactive creature that can move around the world."""
 
+    source_rng = random if rng is None else rng
     return WorldObject(
         id=str(uuid4()),
         name="creature",
@@ -136,6 +140,7 @@ def make_creature(position: tuple[int, int]) -> WorldObject:
             "temperature": CREATURE_TEMPERATURE,
             "brightness": CREATURE_BRIGHTNESS,
             "reactivity": CREATURE_REACTIVITY,
+            "chi_level": source_rng.uniform(CREATURE_CHI_MIN, CREATURE_CHI_MAX),
         },
         interactable=True,
         tags=["creature", "mobile", "entity"],

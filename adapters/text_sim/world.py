@@ -31,6 +31,12 @@ FIRE_RESPAWN_INTERVAL = 50
 EXAMINE_NOISE_RANGE = 0.05
 CREATURE_STAGNATION_LIMIT = 10
 CREATURE_PROPERTY_VARIATION = 0.05
+CHI_FLUCTUATION_RANGE = 0.02
+CHI_MIN_VALUE = 0.1
+CHI_MAX_VALUE = 1.0
+CHI_MEDITATE_GAIN = 0.05
+ITERA_CHI_INITIAL = 0.5
+ITERA_CHI_MAX = 1.0
 
 DIRECTIONS: dict[str, tuple[int, int]] = {
     "north": (0, -1),
@@ -60,6 +66,7 @@ class TextWorld:
         self.itera_position: tuple[int, int] = ITERA_START_POSITION
         self.objects: dict[str, WorldObject] = {}
         self.tick_count = 0
+        self._itera_chi = ITERA_CHI_INITIAL
         self._creature_last_move_tick: dict[str, int] = {}
         self.reset()
 
@@ -68,6 +75,7 @@ class TextWorld:
 
         self._rng = random.Random(self.seed)
         self.tick_count = 0
+        self._itera_chi = ITERA_CHI_INITIAL
         self.itera_position = (self.grid_size // 2, self.grid_size // 2)
         self.objects = {}
         self._creature_last_move_tick = {}
@@ -76,8 +84,8 @@ class TextWorld:
             make_rock((8, 5)),
             make_fire((7, 2)),
             make_water((2, 7)),
-            make_creature((3, 5)),
-            make_creature((6, 6)),
+            make_creature((3, 5), self._rng),
+            make_creature((6, 6), self._rng),
             make_stone_deposit((5, 3)),
         ]:
             self.spawn_object(obj)
@@ -113,8 +121,20 @@ class TextWorld:
         self.itera_position = (new_x, new_y)
         return True
 
-    def interact(self, object_id: str, action: str) -> dict[str, Any]:
+    def interact(self, object_id: str | None, action: str) -> dict[str, Any]:
         """Apply an interaction to an object and return before/after state."""
+
+        if action == "meditate":
+            chi_before = self._itera_chi
+            chi_after = min(ITERA_CHI_MAX, chi_before + CHI_MEDITATE_GAIN)
+            self._itera_chi = chi_after
+            return {
+                "action": "meditate",
+                "itera_chi_before": chi_before,
+                "itera_chi_after": chi_after,
+                "chi_gained": CHI_MEDITATE_GAIN,
+                "success": True,
+            }
 
         obj = self.objects.get(str(object_id))
         if obj is None:
@@ -158,6 +178,12 @@ class TextWorld:
         """Advance the world by one step."""
 
         self.tick_count += 1
+        for obj in self.objects.values():
+            if "creature" not in obj.tags:
+                continue
+            chi_delta = self._rng.uniform(-CHI_FLUCTUATION_RANGE, CHI_FLUCTUATION_RANGE)
+            current_chi = obj.properties.get("chi_level", ITERA_CHI_INITIAL)
+            obj.properties["chi_level"] = max(CHI_MIN_VALUE, min(CHI_MAX_VALUE, current_chi + chi_delta))
         self._move_creatures()
         self._spread_fire()
         self._flow_water()
@@ -173,10 +199,16 @@ class TextWorld:
         return {
             "grid_size": self.grid_size,
             "itera_position": self.itera_position,
+            "itera_chi": self._itera_chi,
             "tick_count": self.tick_count,
             "objects": [obj.to_dict() for obj in self.objects.values()],
             "nearby_objects": [obj.to_dict() for obj in nearby],
         }
+
+    def get_itera_chi(self) -> float:
+        """Return Itera's current chi level."""
+
+        return self._itera_chi
 
     def spawn_object(self, obj: WorldObject) -> None:
         """Add a world object to the grid if it is in bounds."""
