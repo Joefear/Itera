@@ -60,6 +60,13 @@ HYPOTHESIS_PATTERN_NOVELTY_THRESHOLD = 0.3
 HYPOTHESIS_SOCIAL_RELATION_NOVELTY_THRESHOLD = 0.5
 SINGLE_ENTITY_COUNT = 1
 MULTI_ENTITY_THRESHOLD = 2
+DEVELOPMENTAL_REINQUIRY_THRESHOLDS = [0.3, 0.5, 0.7, 0.9]
+REINQUIRY_HYPOTHESES_PER_THRESHOLD = 3
+REINQUIRY_STAGE_KEY = "last_reinquiry_stage"
+CURIOSITY_FLOOR_INTERVAL = 50
+CURIOSITY_FLOOR_NOVELTY_OVERRIDE = 0.15
+STAGE_COMPARATIVE_REINQUIRY_MIN = 0.5
+STAGE_RELATIONAL_REINQUIRY_MIN = 0.7
 
 DRIVE_TEST_INTENTS: dict[str, str] = {
     "SURVIVAL": "probe immediate risk or resource conditions",
@@ -145,6 +152,8 @@ class HypothesisEngine:
         self._observation_identity_map: dict[int, str] = {}
         self.hypotheses: dict[str, Hypothesis] = {}
         self.test_results: list[TestResult] = []
+        self.last_reinquiry_stage = MIN_SIGNAL_VALUE
+        self.cycles_since_last_generation = 0
 
     def _drive_snapshot(self) -> dict[str, Any]:
         """Capture the current drive hierarchy as observation context."""
@@ -377,11 +386,22 @@ class HypothesisEngine:
 
         return observation
 
-    def generate_hypothesis(self, observation: Observation) -> Hypothesis | None:
+    def generate_hypothesis(
+        self,
+        observation: Observation,
+        novelty_override: float | None = None,
+    ) -> Hypothesis | None:
         """Generate a drive-weighted hypothesis from an observation when warranted."""
 
         drive_name, drive_weight = self._top_driving_tier()
-        if observation.novelty_score < NOVELTY_GENERATION_THRESHOLD or drive_weight < DRIVE_GENERATION_THRESHOLD:
+        effective_novelty = observation.novelty_score if novelty_override is None else _clamp(
+            novelty_override,
+            MIN_SIGNAL_VALUE,
+            MAX_SIGNAL_VALUE,
+        )
+        if novelty_override is None and effective_novelty < NOVELTY_GENERATION_THRESHOLD:
+            return None
+        if drive_weight < DRIVE_GENERATION_THRESHOLD:
             return None
 
         observation_id = self._observation_id(observation)
@@ -410,8 +430,133 @@ class HypothesisEngine:
             hypothesis_type=hypothesis_type,
         )
         self.hypotheses[hypothesis.id] = hypothesis
+        self.cycles_since_last_generation = 0
         self._trim_pending_hypotheses()
         return hypothesis
+
+    def should_generate_from_curiosity_floor(self, cycles_since_last_generation: int) -> bool:
+        """
+        Returns True if enough cycles have passed without
+        generating a new hypothesis.
+        Triggered when cycles_since_last_generation >=
+        CURIOSITY_FLOOR_INTERVAL and confirmed > 0.
+        """
+
+        self.cycles_since_last_generation = max(0, int(cycles_since_last_generation))
+        return (
+            self.cycles_since_last_generation >= CURIOSITY_FLOOR_INTERVAL
+            and len(self.get_confirmed()) > 0
+        )
+
+    def check_developmental_reinquiry(
+        self,
+        current_stage: float,
+        observation: Observation,
+    ) -> list[Hypothesis]:
+        """
+        Check if Itera's developmental stage has crossed a
+        threshold that warrants re-examining known phenomena.
+
+        At each threshold in DEVELOPMENTAL_REINQUIRY_THRESHOLDS,
+        generate REINQUIRY_HYPOTHESES_PER_THRESHOLD new hypotheses
+        by taking confirmed hypotheses and forming deeper questions.
+
+        Only fires once per threshold, tracked by last_reinquiry_stage.
+        """
+
+        normalized_stage = _clamp(current_stage, MIN_SIGNAL_VALUE, MAX_SIGNAL_VALUE)
+        crossed_thresholds = [
+            threshold
+            for threshold in DEVELOPMENTAL_REINQUIRY_THRESHOLDS
+            if self.last_reinquiry_stage < threshold <= normalized_stage
+        ]
+        if not crossed_thresholds:
+            return []
+
+        confirmed = sorted(
+            self.get_confirmed(),
+            key=lambda hypothesis: (hypothesis.confidence, hypothesis.created_at),
+            reverse=True,
+        )
+        if not confirmed:
+            return []
+
+        generated: list[Hypothesis] = []
+        for threshold in crossed_thresholds:
+            for source_hypothesis in confirmed[:REINQUIRY_HYPOTHESES_PER_THRESHOLD]:
+                generated.append(
+                    self._generate_reinquiry_hypothesis(
+                        source_hypothesis=source_hypothesis,
+                        current_stage=threshold,
+                        observation=observation,
+                    )
+                )
+            self.last_reinquiry_stage = threshold
+
+        if generated:
+            self.cycles_since_last_generation = 0
+        return generated
+
+    def _generate_reinquiry_hypothesis(
+        self,
+        source_hypothesis: Hypothesis,
+        current_stage: float,
+        observation: Observation,
+    ) -> Hypothesis:
+        """
+        Generate a deeper hypothesis from a confirmed one.
+
+        New hypotheses start pending with fresh confidence and no tests,
+        regardless of the source hypothesis confidence.
+        """
+
+        observation_id = self._observation_id(observation)
+        observation_ids = list(dict.fromkeys(
+            ([observation_id] if observation_id is not None else [])
+            + list(source_hypothesis.observation_ids)
+        ))
+        predicted_outcome = dict(source_hypothesis.predicted_outcome)
+        if not predicted_outcome:
+            focus_keys = self._focus_keys_for_observation(observation, source_hypothesis.drive_source)
+            predicted_outcome = {
+                key: observation.data[key]
+                for key in focus_keys
+                if key in observation.data
+            }
+
+        if current_stage < STAGE_COMPARATIVE_REINQUIRY_MIN:
+            hypothesis_type = HypothesisType.CAUSAL
+            statement = (
+                "Re-inquiry: what causes this confirmed pattern to hold? "
+                f"Source: {source_hypothesis.statement}"
+            )
+        elif current_stage < STAGE_RELATIONAL_REINQUIRY_MIN:
+            hypothesis_type = HypothesisType.COMPARATIVE
+            statement = (
+                "Re-inquiry: how does this confirmed pattern differ across entities or conditions? "
+                f"Source: {source_hypothesis.statement}"
+            )
+        else:
+            entity_count = len(self._observation_entities(observation))
+            hypothesis_type = HypothesisType.RELATIONAL if entity_count >= MULTI_ENTITY_THRESHOLD else HypothesisType.PREDICTIVE
+            statement = (
+                "Re-inquiry: how does this confirmed pattern relate to other patterns and predict future outcomes? "
+                f"Source: {source_hypothesis.statement}"
+            )
+
+        return Hypothesis(
+            id=str(uuid4()),
+            created_at=time.time(),
+            observation_ids=observation_ids,
+            statement=statement,
+            predicted_outcome=predicted_outcome,
+            drive_source=source_hypothesis.drive_source,
+            confidence=INITIAL_CONFIDENCE,
+            test_count=0,
+            status="pending",
+            valence=0.0,
+            hypothesis_type=hypothesis_type,
+        )
 
     def _trim_pending_hypotheses(self) -> None:
         """Bound pending-hypothesis growth by discarding the weakest stale items."""
@@ -577,6 +722,8 @@ class HypothesisEngine:
                 for hypothesis_id, hypothesis in self.hypotheses.items()
             },
             "test_results": [asdict(result) for result in self.test_results],
+            REINQUIRY_STAGE_KEY: self.last_reinquiry_stage,
+            "cycles_since_last_generation": self.cycles_since_last_generation,
         }
 
     @classmethod
@@ -631,6 +778,15 @@ class HypothesisEngine:
             )
             for result_data in data.get("test_results", [])
         ]
+        engine.last_reinquiry_stage = _clamp(
+            float(data.get(REINQUIRY_STAGE_KEY, MIN_SIGNAL_VALUE)),
+            MIN_SIGNAL_VALUE,
+            MAX_SIGNAL_VALUE,
+        )
+        engine.cycles_since_last_generation = max(
+            0,
+            int(data.get("cycles_since_last_generation", 0)),
+        )
         return engine
 
     def summary(self) -> str:

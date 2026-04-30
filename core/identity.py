@@ -18,14 +18,14 @@ try:
     import core.memory as memory_module
     from core.drives import DriveHierarchy
     from core.empathy import EmpathyLayer
+    from core.hypothesis import CURIOSITY_FLOOR_NOVELTY_OVERRIDE, HypothesisEngine
     from core.memory import MemoryGraph
-    from core.hypothesis import HypothesisEngine
 except ModuleNotFoundError:  # pragma: no cover - convenience for direct execution
     import memory as memory_module
     from drives import DriveHierarchy
     from empathy import EmpathyLayer
+    from hypothesis import CURIOSITY_FLOOR_NOVELTY_OVERRIDE, HypothesisEngine
     from memory import MemoryGraph
-    from hypothesis import HypothesisEngine
 
 IDENTITY_VERSION = "0.1.0"
 DEFAULT_IDENTITY_NAME = "Itera"
@@ -213,6 +213,7 @@ class Identity:
         self._last_decision: dict[str, Any] | None = None
         self._known_confirmed_ids: set[str] = set()
         self._last_social_updates: dict[str, float] = {}
+        self._cycles_without_hypothesis: int = 0
 
     def wake(self) -> dict[str, Any]:
         """Load persisted state if present and return a session summary."""
@@ -319,12 +320,34 @@ class Identity:
         stored_observation = self.hypothesis_engine.observe(observation_for_hypothesis)
         if social_updates:
             self.drives.update(social_updates)
-        generated = self.hypothesis_engine.generate_hypothesis(stored_observation)
+        if self.hypothesis_engine.get_active():
+            self._cycles_without_hypothesis = 0
+        else:
+            self._cycles_without_hypothesis += 1
+
+        novelty_override = None
+        if self.hypothesis_engine.should_generate_from_curiosity_floor(self._cycles_without_hypothesis):
+            novelty_override = CURIOSITY_FLOOR_NOVELTY_OVERRIDE
+
+        generated = self.hypothesis_engine.generate_hypothesis(
+            stored_observation,
+            novelty_override=novelty_override,
+        )
+        reinquiry_hypotheses = self.hypothesis_engine.check_developmental_reinquiry(
+            current_stage=self.developmental.stage,
+            observation=stored_observation,
+        )
+        for hypothesis in reinquiry_hypotheses:
+            self.hypothesis_engine.hypotheses[hypothesis.id] = hypothesis
+
         dominant_drive = self.current_drive()
         self.developmental.record_dominant_drive(dominant_drive)
 
-        if generated is not None:
-            self.developmental.total_hypotheses += 1
+        generated_count = (1 if generated is not None else 0) + len(reinquiry_hypotheses)
+        if generated_count > 0:
+            self.developmental.total_hypotheses += generated_count
+            self._cycles_without_hypothesis = 0
+            self.hypothesis_engine.cycles_since_last_generation = 0
 
         if stored_observation.novelty_score < MEMORY_NOVELTY_THRESHOLD:
             return
@@ -547,6 +570,7 @@ class Identity:
         identity.empathy.update_developmental_stage(identity.developmental.stage)
         identity.hypothesis_engine = HypothesisEngine.from_dict(dict(data.get("hypothesis", {})), drives=identity.drives)
         identity._known_confirmed_ids = {hypothesis.id for hypothesis in identity.hypothesis_engine.get_confirmed()}
+        identity._cycles_without_hypothesis = 0
         return identity
 
     def summary(self) -> str:
