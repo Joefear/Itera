@@ -36,7 +36,6 @@ DEFAULT_MOVE_FALLBACK_ACTION = "move"
 DEFAULT_MOVE_DIRECTION = "north"
 DEFAULT_FALLBACK_DRIVE_SOURCE = "MASTERY"
 DEFAULT_FALLBACK_RADIUS = 1
-ENTITY_PREDICTION_GAP_NORMALIZER = 5.0
 TOP_MEMORY_LIMIT = 3
 DEFAULT_DEMO_MAX_CYCLES = 200
 
@@ -191,12 +190,6 @@ class FastSim:
             "available_actions": list(obs.available_actions),
             "entities": [dict(entity) for entity in obs.entities],
         }
-        if obs.entities:
-            observation["entity_prediction_gap"] = min(1.0, len(obs.entities) / ENTITY_PREDICTION_GAP_NORMALIZER)
-            observation["relationship_depth"] = min(
-                1.0,
-                sum(1 for entity in obs.entities if "creature" in entity.get("tags", [])) / float(len(obs.entities)),
-            )
         return observation
 
     def _translate_action(self, action_dict: dict[str, Any]) -> Action:
