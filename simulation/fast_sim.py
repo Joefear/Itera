@@ -442,7 +442,12 @@ class FastSim:
 if __name__ == "__main__":
     # Clear data/identity between major test runs to avoid carrying large saved sessions forward.
     demo_data_dir = str(Path(DEFAULT_DATA_DIR) / f"fast_sim_demo_{int(time.time())}")
-    config = SimConfig(max_cycles=DEFAULT_DEMO_MAX_CYCLES, verbose=True, data_dir=demo_data_dir)
+    config = SimConfig(
+        max_duration_seconds=3600,
+        log_interval=100,
+        checkpoint_interval=500,
+        verbose=True,
+    )
     sim = FastSim(config=config)
     sim.setup()
     result = sim.run()
