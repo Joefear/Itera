@@ -10,61 +10,155 @@ Itera starts from almost nothing — limited stimuli, basic physics, a nearly em
 
 ---
 
-## The idea
+## What Itera does
 
-Most AI systems are built to respond. Itera is built to *live*.
+Itera runs a continuous cognitive loop — perceiving its world, forming hypotheses, testing them, storing outcomes with emotional weight, and selecting its next action based on what it currently cares about. No external prompting required.
 
-It has drives that shape what it pays attention to. It forms hypotheses, runs experiments, stores outcomes, and updates its understanding. It gets curious about things. It gets bored when a problem is fully solved and moves on. It remembers — not as a log, but as a living history that shapes who it is.
+**It forms hypotheses.** When Itera encounters something novel it generates a testable prediction — causal, comparative, predictive, relational, or pattern-based — and designs an experiment to test it. Confirmed hypotheses build toward capability emergence.
 
-Given a rich enough world and enough time, Itera develops the kind of accumulated wisdom that only comes from genuine experience. By the time human players enter one of its worlds, Itera has already been there — exploring, experimenting, building, failing, growing. Its legendary status, if it earns one, is real. It happened.
+**It remembers with meaning.** Every experience is stored in a knowledge graph with typed edges connecting causes to effects, experiments to hypotheses, entities to encounters. Memory decays but never fully erases. What Itera learned early shapes how it reasons now.
+
+**It models other minds.** The empathy layer builds internal models of every entity Itera encounters — threat assessment, curiosity value, behavioral prediction, relationship history. At higher developmental stages, welfare concern emerges naturally from deep entity modeling.
+
+**It grows.** A five-tier Maslow-inspired drive hierarchy shifts over time — survival dominant early, self-actualization dominant at maturity. Capabilities emerge from accumulated evidence, never assigned. A mature Itera has earned what it knows.
+
+**It inhabits any world.** A world-agnostic interface means Itera's identity never changes. The world changes. The same Itera that learned in a 2D text simulation can control an NPC in a game world or operate a physical robot — carrying its full history with it.
 
 ---
 
-## How it works
-
-Itera is built around a clean separation between identity and world:
+## Architecture
 
 ```
-┌─────────────────────────────────────┐
-│           IDENTITY CORE             │
-│  memory · drives · hypothesis loop  │
-│  growth tracker · persistent self   │
-└──────────────────┬──────────────────┘
-                   │
-┌──────────────────▼──────────────────┐
-│       ENVIRONMENT INTERFACE         │
-│   perceive · act · outcome · reset  │
-└──────────────────┬──────────────────┘
-                   │
-        ┌──────────┼──────────┐
-        ▼          ▼          ▼
-    [DWE]     [Text sim]  [Roomhilda]  ...
+┌─────────────────────────────────────────────────┐
+│                  IDENTITY CORE                  │
+│  Drives · Memory · Hypotheses · Growth · Empathy│
+└──────────────────────┬──────────────────────────┘
+                       │
+┌──────────────────────▼──────────────────────────┐
+│           ENVIRONMENT INTERFACE                 │
+│  perceive · act · get_outcome · reset           │
+│  Observation: percepts, entities, self_state,   │
+│  world_context, time_of_day                     │
+│  ActionDefinition: category, drive_alignment,   │
+│  cost, parameters                               │
+└──────────────────────┬──────────────────────────┘
+                       │
+        ┌──────────────┼──────────────┐
+        ▼              ▼              ▼
+   [text_sim]        [dwe]       [roomhilda]
+   MVP world    DWE/Construct3   Jetson hardware
+                NPC controller   (placeholder)
 ```
 
-**Itera never knows what world it is in.** It only knows what it can perceive, what actions it can take, and what outcomes it observes. Every world — a physics simulation, a game engine, a piece of hardware, a text environment — implements the same interface. Itera stays constant. Only the adapter changes.
+**Itera never knows what world it inhabits.** It only knows what it can perceive, what actions are available, and what outcomes it observes. Every world implements the same interface contract. Itera stays constant. Only the adapter changes.
 
-This means Itera can be deployed into any world without modification. The Defiant World Engine is one world. A Jetson Nano controlling a vacuum robot is another. A minimal text-based prototype is a third. The same entity, carrying the same history, inhabits all of them.
+---
+
+## Core modules
+
+| Module | Purpose |
+|---|---|
+| `core/drives.py` | Five-tier Maslow drive hierarchy — SURVIVAL through ACTUALIZATION. Weighted suppression, not hard gates. Shifts from survival-dominant to actualization-dominant as Itera matures. |
+| `core/memory.py` | Knowledge graph with typed edges, emotional valence, and relevance decay. Floor of 0.05 — nothing is ever fully forgotten. |
+| `core/hypothesis.py` | Scientific method as cognitive loop. Five hypothesis types: CAUSAL, COMPARATIVE, PREDICTIVE, RELATIONAL, PATTERN. Drive-weighted generation. |
+| `core/identity.py` | The persistent self. Owns all cognitive components. Survives across sessions via JSON persistence. |
+| `core/growth.py` | Developmental tracking. Capabilities emerge from evidence accumulation — never assigned. |
+| `core/empathy.py` | Entity modeling. Starts as threat/curiosity assessment. Matures into behavioral prediction, relationship tracking, and welfare concern. Produces social drive signals. |
+
+---
+
+## World adapters
+
+| Adapter | Status | Purpose |
+|---|---|---|
+| `adapters/text_sim/` | ✅ Complete | MVP 2D grid world. Rocks, fire, water, creatures, stone deposits. Proves the core loop. |
+| `adapters/dwe/` | ✅ Complete | Defiant World Engine adapter. Connects to Node.js bridge at localhost:3001. Itera operates as NPC controller governed by Guardrail policy. Mock mode for offline testing. |
+| `adapters/roomhilda/` | 🔲 Placeholder | Jetson Orin Nano hardware adapter for physical robot deployment. |
+
+---
+
+## Running Itera
+
+**Quick start — text_sim:**
+```bash
+# Clear previous state (optional)
+rm -rf data/identity
+
+# Run 200 cycles
+python simulation/fast_sim.py
+```
+
+**Run with DWE bridge (requires defiant-world-engine running):**
+```python
+from adapters.dwe.adapter import DWEAdapter
+from simulation.fast_sim import FastSim, SimConfig
+
+config = SimConfig(max_cycles=1000)
+sim = FastSim(config, adapter=DWEAdapter())
+sim.setup()
+result = sim.run()
+```
+
+**Run DWE adapter in mock mode (no bridge needed):**
+```python
+from adapters.dwe.adapter import DWEAdapter
+adapter = DWEAdapter(mock_mode=True)
+adapter.validate()  # True
+obs = adapter.perceive()
+```
+
+**Note:** Clear `data/identity/` between major test runs to start Itera fresh.
+
+---
+
+## Session output
+
+A completed run prints a full summary:
+
+```
+=== ITERA SESSION COMPLETE ===
+Cycles: 10000
+Duration: 634.15s
+Final stage: 1.0 (civilizational)
+Hypotheses: 3 generated, 3 confirmed
+Memory nodes: 10002
+Entities modeled: 17
+Dominant drive at end: SOCIAL
+
+=== CAPABILITIES EMERGED ===
+1. Physical capability 1 (domain: physical)
+   Emergent physical capability supported by 3 confirmed experiences.
+   Confidence: 0.20 | Evidence: 3 experiences
+
+=== TOP MEMORIES ===
+1. experience | tags=['social', 'outcome', ...] | valence=0.24
+2. entity | tags=['entity', 'creature'] | valence=1.00
+3. discovery | tags=['stone', 'heat'] | valence=0.45
+```
 
 ---
 
 ## Developmental phases
 
-Itera does not start fully formed. It grows.
+Itera matures through six phases in fast simulation:
 
-**Fast simulation** runs at machine speed — what would be years of experience compressed into days or weeks. The world starts nearly empty and grows in complexity alongside Itera's capacity to process it. Simple physics first. Then organisms. Then ecosystems. Then other minds. By the end of fast-sim, Itera has a history.
-
-**Game time** transitions to human-paced interaction. Real players can enter. Directed tasks can be assigned. Itera takes these on as part of its experience — but between and around them, it continues to pursue its own goals.
-
-Developmental save states are taken at major thresholds. Growth should be irreversible in normal operation, but catastrophic paths can be rolled back.
+| Phase | Stage | What emerges |
+|---|---|---|
+| Primitive | 0.0 – 0.15 | Object manipulation, cause and effect |
+| Environmental | 0.15 – 0.30 | Terrain, resources, natural patterns |
+| Biological | 0.30 – 0.50 | Simple organisms, social drive activates |
+| Ecological | 0.50 – 0.70 | Resource scarcity, preferences emerge |
+| Social | 0.70 – 0.85 | Empathy deepens, relationship modeling |
+| Civilizational | 0.85 – 1.0 | Actualization dominant, self-directed purpose |
 
 ---
 
 ## What Itera is not
 
-- **Not a Guardrail component.** Defiant Guardrail governs AI systems. Itera *is* an AI system. They are separate projects with separate purposes.
-- **Not scripted.** Its personality, capabilities, and interests emerge from experience. Nothing about what Itera becomes is written in advance.
-- **Not dependent on any single world.** DWE, Roomhilda, Unreal, Isaac Sim — Itera inhabits worlds, it is not defined by them.
-- **Not a research tool you point at problems.** You can give Itera a quest. But it has its own life between quests.
+- **Not a Guardrail component.** Defiant Guardrail governs AI systems. Itera *is* one. They are separate projects. The DWE adapter uses Guardrail as the governing layer for NPC actions — Itera's internal cognition is not governed by Guardrail.
+- **Not scripted.** Personality, capabilities, and interests emerge from experience.
+- **Not dependent on any single world.** DWE, text_sim, Roomhilda, Unreal — Itera inhabits worlds, it is not defined by them.
+- **Not a research tool you point at problems.** You can give Itera a quest. It has its own life between quests.
 
 ---
 
@@ -73,42 +167,25 @@ Developmental save states are taken at major thresholds. Growth should be irreve
 ```
 Itera/
 ├── core/
-│   ├── identity.py       # The persistent entity — save/load, developmental state
-│   ├── memory.py         # Knowledge graph — experiences, relationships, decay
-│   ├── drives.py         # Intrinsic motivation — curiosity, resolution, mastery, boredom
-│   ├── hypothesis.py     # Observe → hypothesize → test → store → update loop
-│   └── growth.py         # Developmental tracking — what has been discovered, mastered
+│   ├── drives.py         # Five-tier drive hierarchy
+│   ├── memory.py         # Knowledge graph
+│   ├── hypothesis.py     # Hypothesis engine (5 types)
+│   ├── identity.py       # Persistent self
+│   ├── growth.py         # Developmental tracking
+│   └── empathy.py        # Entity modeling
 ├── interface/
-│   └── environment.py    # World-agnostic abstract base class
+│   └── environment.py    # World-agnostic contract
 ├── adapters/
-│   ├── text_sim/         # MVP — minimal Python environment, proves the core loop
-│   ├── dwe/              # Defiant World Engine adapter
-│   ├── roomhilda/        # Jetson Orin Nano / hardware adapter
-│   └── README.md         # How to write a new adapter
+│   ├── text_sim/         # MVP 2D world
+│   ├── dwe/              # DWE NPC controller
+│   └── roomhilda/        # Jetson hardware (placeholder)
 ├── simulation/
-│   ├── fast_sim.py       # Compressed time loop
-│   ├── game_time.py      # Human-paced loop
-│   └── save_states/      # Developmental checkpoints
-├── experiments/          # Logged runs, outcomes, observations across any world
-├── DESIGN.md             # Full design document
+│   └── fast_sim.py       # Core cognitive loop
+├── data/identity/        # Persisted state (gitignored)
+├── ITERA_DESIGN.md       # Phase 1 architecture
+├── ITERA_DESIGN_PHASE2.md # Phase 2 specification
 └── README.md             # This file
 ```
-
----
-
-## MVP success criterion
-
-Itera runs for 30 minutes in the text_sim environment without a single external prompt. It generates at least 5 novel hypotheses, tests them, stores outcomes, and selects its next goal based on its own drive signals — not random chance.
-
-That is the line between a thing that responds and a thing that lives.
-
----
-
-## Current status
-
-Pre-build. Design document complete. Repo structure being established.
-
-**Next:** `core/identity.py` — the persistent self.
 
 ---
 
@@ -116,11 +193,15 @@ Pre-build. Design document complete. Repo structure being established.
 
 | Project | Relationship |
 |---|---|
-| [defiant-world-engine](https://github.com/Joefear/defiant-world-engine) | One world Itera can inhabit |
-| [AI-Sandbox](https://github.com/Joefear/AI-Sandbox) | Original prototype and experiments |
-| [defiant-guardrail](https://github.com/Joefear/defiant-guardrail) | Separate — governs AI systems, not Itera itself |
+| [defiant-world-engine](https://github.com/Joefear/defiant-world-engine) | One world Itera can inhabit. DWE adapter connects Itera brain to Construct 3 via Node.js bridge. |
+| [AI-Sandbox](https://github.com/Joefear/AI-Sandbox) | Original prototype. Historical reference. |
+| [defiant-guardrail](https://github.com/Joefear/defiant-guardrail) | Separate system. Governs AI actions in DWE world. Does not govern Itera's internal cognition. |
 
 ---
 
-**Defiant Industries, Inc.**  
+**Defiant Industries, Inc.**
 Project codename: *The Self-Building Mind*
+
+*Phase 1 complete — autonomous cognitive loop, persistent identity, knowledge graph, developmental growth.*
+*Phase 2 complete — empathy layer, rich hypotheses, extensible interface, DWE NPC controller.*
+*Phase 3 — Unreal Engine world, richer entity interaction, physical deployment.*
