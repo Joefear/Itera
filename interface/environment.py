@@ -8,7 +8,7 @@ only; adapters translate world-specific behavior into this contract.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 MIN_NORMALIZED_VALUE = 0.0
@@ -17,6 +17,17 @@ MIN_VALENCE = -1.0
 MAX_VALENCE = 1.0
 DEFAULT_NOVELTY_HINT = 0.0
 DEFAULT_ADAPTER_VERSION = "0.1.0"
+DEFAULT_TIME_OF_DAY = 0.0
+MOCK_TIME_OF_DAY = 0.3
+MOCK_SELF_HEALTH = 1.0
+MOCK_SELF_ENERGY = 0.9
+MOCK_POSITION_X = 5
+MOCK_POSITION_Y = 5
+MOCK_OBSERVE_SECURITY_ALIGNMENT = 0.6
+MOCK_OBSERVE_MASTERY_ALIGNMENT = 0.4
+MOCK_WAIT_SECURITY_ALIGNMENT = 0.2
+MOCK_OBSERVE_COST = 0.1
+MOCK_WAIT_COST = 0.0
 
 
 @dataclass
@@ -32,6 +43,39 @@ class Observation:
     entities: list[dict[str, Any]]
     available_actions: list[str]
     novelty_hint: float
+    self_state: dict = field(default_factory=dict)
+    world_context: dict = field(default_factory=dict)
+    time_of_day: float = DEFAULT_TIME_OF_DAY
+
+
+@dataclass(eq=False)
+class ActionDefinition:
+    """
+    A structured action that an adapter makes available to Itera.
+    Replaces bare string action names with rich metadata.
+    Itera uses drive_alignment and cost to choose between actions.
+    """
+
+    name: str
+    category: str
+    parameters: dict
+    drive_alignment: dict[str, float]
+    cost: float
+    description: str
+
+    def __eq__(self, other: object) -> bool:
+        """Compare by action name so legacy string membership checks still work."""
+
+        if isinstance(other, ActionDefinition):
+            return self.name == other.name
+        if isinstance(other, str):
+            return self.name == other
+        return False
+
+    def __hash__(self) -> int:
+        """Hash by action name for compatibility with old set-based callers."""
+
+        return hash(self.name)
 
 
 @dataclass
@@ -80,8 +124,20 @@ class EnvironmentInterface(ABC):
         """Return the outcome of the most recent action taken in the world."""
 
     @abstractmethod
-    def get_available_actions(self) -> list[str]:
-        """Return action names available in the current world state."""
+    def get_available_actions(self) -> list[ActionDefinition]:
+        """Return structured actions available in the current world state."""
+
+    def get_available_action_names(self) -> list[str]:
+        """
+        Convenience method returning just action name strings.
+        Default implementation calls get_available_actions()
+        and extracts names. Adapters may override for efficiency.
+        """
+
+        return [
+            action.name if isinstance(action, ActionDefinition) else str(action)
+            for action in self.get_available_actions()
+        ]
 
     @abstractmethod
     def reset(self) -> Observation:
@@ -136,8 +192,15 @@ class MockAdapter(EnvironmentInterface):
                 "curiosity_signal": float(self._state["curiosity_signal"]),
             },
             entities=[dict(entity) for entity in self._entities],
-            available_actions=self.get_available_actions(),
+            available_actions=self.get_available_action_names(),
             novelty_hint=DEFAULT_NOVELTY_HINT,
+            self_state={
+                "health": MOCK_SELF_HEALTH,
+                "energy": MOCK_SELF_ENERGY,
+                "position": [MOCK_POSITION_X, MOCK_POSITION_Y],
+            },
+            world_context={"time_of_day": MOCK_TIME_OF_DAY, "weather": "clear"},
+            time_of_day=MOCK_TIME_OF_DAY,
         )
 
     def act(self, action: Action) -> None:
@@ -171,10 +234,30 @@ class MockAdapter(EnvironmentInterface):
             raise RuntimeError("get_outcome() called before any action was taken.")
         return self._last_outcome
 
-    def get_available_actions(self) -> list[str]:
-        """Return the small set of actions available in the mock world."""
+    def get_available_actions(self) -> list[ActionDefinition]:
+        """Return the small set of structured actions available in the mock world."""
 
-        return ["observe_beacon", "wait"]
+        return [
+            ActionDefinition(
+                name="observe_beacon",
+                category="exploration",
+                parameters={"target": "string"},
+                drive_alignment={
+                    "SECURITY": MOCK_OBSERVE_SECURITY_ALIGNMENT,
+                    "MASTERY": MOCK_OBSERVE_MASTERY_ALIGNMENT,
+                },
+                cost=MOCK_OBSERVE_COST,
+                description="Observe the nearby beacon.",
+            ),
+            ActionDefinition(
+                name="wait",
+                category="interaction",
+                parameters={},
+                drive_alignment={"SECURITY": MOCK_WAIT_SECURITY_ALIGNMENT},
+                cost=MOCK_WAIT_COST,
+                description="Let the mock world advance without acting.",
+            ),
+        ]
 
     def reset(self) -> Observation:
         """Reset the mock world to its initial state and return the first observation."""

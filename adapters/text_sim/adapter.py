@@ -9,6 +9,7 @@ from typing import Any
 try:
     from interface.environment import (
         Action,
+        ActionDefinition,
         DEFAULT_ADAPTER_VERSION,
         MAX_VALENCE,
         MIN_VALENCE,
@@ -23,6 +24,7 @@ except ModuleNotFoundError:  # pragma: no cover - convenience for direct executi
     sys.path.append(str(Path(__file__).resolve().parents[2]))
     from interface.environment import (  # type: ignore[no-redef]
         Action,
+        ActionDefinition,
         DEFAULT_ADAPTER_VERSION,
         MAX_VALENCE,
         MIN_VALENCE,
@@ -44,6 +46,50 @@ NOVELTY_CHANGE_FLOOR = 0.25
 INTERACTION_NOVELTY_MINIMUM = 0.5
 MINIMUM_NOVELTY_PER_CYCLE = 0.1
 PROPERTY_CHANGE_NOVELTY_THRESHOLD = 0.05
+TEXT_SIM_SELF_ENERGY = 1.0
+TEXT_SIM_DAY_CYCLE_TICKS = 100
+
+ACTION_MOVE = "move"
+ACTION_EXAMINE = "examine"
+ACTION_PUSH = "push"
+ACTION_HEAT = "heat"
+ACTION_COOL = "cool"
+ACTION_COMBINE = "combine"
+
+ACTION_CATEGORY_MOVEMENT = "movement"
+ACTION_CATEGORY_EXPLORATION = "exploration"
+ACTION_CATEGORY_INTERACTION = "interaction"
+
+PARAMETER_DIRECTION = "direction"
+PARAMETER_OBJECT_ID = "object_id"
+PARAMETER_TARGET_ID = "target_id"
+PARAMETER_DIRECTION_OPTIONS = "north|south|east|west"
+PARAMETER_STRING = "string"
+
+DRIVE_SECURITY = "SECURITY"
+DRIVE_MASTERY = "MASTERY"
+DRIVE_SURVIVAL = "SURVIVAL"
+DRIVE_ACTUALIZATION = "ACTUALIZATION"
+
+MOVE_SECURITY_ALIGNMENT = 0.7
+MOVE_MASTERY_ALIGNMENT = 0.3
+EXAMINE_MASTERY_ALIGNMENT = 0.8
+EXAMINE_SECURITY_ALIGNMENT = 0.4
+PUSH_MASTERY_ALIGNMENT = 0.6
+PUSH_SURVIVAL_ALIGNMENT = 0.3
+HEAT_MASTERY_ALIGNMENT = 0.7
+HEAT_SECURITY_ALIGNMENT = 0.3
+COOL_MASTERY_ALIGNMENT = 0.7
+COOL_SECURITY_ALIGNMENT = 0.3
+COMBINE_MASTERY_ALIGNMENT = 0.9
+COMBINE_ACTUALIZATION_ALIGNMENT = 0.4
+
+MOVE_ACTION_COST = 0.1
+EXAMINE_ACTION_COST = 0.05
+PUSH_ACTION_COST = 0.2
+HEAT_ACTION_COST = 0.3
+COOL_ACTION_COST = 0.3
+COMBINE_ACTION_COST = 0.4
 
 
 def _clamp(value: float, minimum: float, maximum: float) -> float:
@@ -72,12 +118,19 @@ class TextSimAdapter(EnvironmentInterface):
         signature = self._state_signature(nearby)
         novelty_hint = self._novelty_from_signature(signature)
         self._last_perception_signature = signature
+        time_of_day = (int(state["tick_count"]) % TEXT_SIM_DAY_CYCLE_TICKS) / float(TEXT_SIM_DAY_CYCLE_TICKS)
         return Observation(
             timestamp=time.time(),
             percepts=percepts,
             entities=self._build_entities(nearby),
-            available_actions=self.get_available_actions(),
+            available_actions=self.get_available_action_names(),
             novelty_hint=novelty_hint,
+            self_state={
+                "position": list(state["itera_position"]),
+                "energy": TEXT_SIM_SELF_ENERGY,
+            },
+            world_context={},
+            time_of_day=time_of_day,
         )
 
     def act(self, action: Action) -> None:
@@ -87,17 +140,17 @@ class TextSimAdapter(EnvironmentInterface):
         success = False
         outcome_details: dict[str, Any]
 
-        if action.name == "move":
-            direction = str(action.parameters.get("direction", ""))
+        if action.name == ACTION_MOVE:
+            direction = str(action.parameters.get(PARAMETER_DIRECTION, ""))
             success = self.world.move_itera(direction)
             outcome_details = {
                 "success": success,
-                "type": "move",
+                "type": ACTION_MOVE,
                 "direction": direction,
                 "position": self.world.itera_position,
             }
-        elif action.name in {"examine", "push", "heat", "cool", "combine"}:
-            object_id = str(action.parameters.get("object_id", ""))
+        elif action.name in {ACTION_EXAMINE, ACTION_PUSH, ACTION_HEAT, ACTION_COOL, ACTION_COMBINE}:
+            object_id = str(action.parameters.get(PARAMETER_OBJECT_ID, ""))
             outcome_details = self.world.interact(object_id, action.name)
             success = bool(outcome_details.get("success", False))
         else:
@@ -122,14 +175,115 @@ class TextSimAdapter(EnvironmentInterface):
             raise RuntimeError("get_outcome() called before any action was taken.")
         return self._last_outcome
 
-    def get_available_actions(self) -> list[str]:
-        """Return all valid action names in the current local context."""
+    def get_available_actions(self) -> list[ActionDefinition]:
+        """Return all valid structured actions in the current local context."""
 
-        actions = ["move"]
+        actions = [self._move_action_definition()]
         nearby = self.world.get_nearby(self.world.itera_position, radius=DEFAULT_NEARBY_RADIUS)
         if nearby:
-            actions.extend(["examine", "push", "heat", "cool", "combine"])
+            actions.extend(
+                [
+                    self._examine_action_definition(),
+                    self._push_action_definition(),
+                    self._heat_action_definition(),
+                    self._cool_action_definition(),
+                    self._combine_action_definition(),
+                ]
+            )
         return actions
+
+    def _move_action_definition(self) -> ActionDefinition:
+        """Build the current move action definition."""
+
+        return ActionDefinition(
+            name=ACTION_MOVE,
+            category=ACTION_CATEGORY_MOVEMENT,
+            parameters={PARAMETER_DIRECTION: PARAMETER_DIRECTION_OPTIONS},
+            drive_alignment={
+                DRIVE_SECURITY: MOVE_SECURITY_ALIGNMENT,
+                DRIVE_MASTERY: MOVE_MASTERY_ALIGNMENT,
+            },
+            cost=MOVE_ACTION_COST,
+            description="Move Itera one cell in a cardinal direction.",
+        )
+
+    def _examine_action_definition(self) -> ActionDefinition:
+        """Build the current examine action definition."""
+
+        return ActionDefinition(
+            name=ACTION_EXAMINE,
+            category=ACTION_CATEGORY_EXPLORATION,
+            parameters={PARAMETER_OBJECT_ID: PARAMETER_STRING},
+            drive_alignment={
+                DRIVE_MASTERY: EXAMINE_MASTERY_ALIGNMENT,
+                DRIVE_SECURITY: EXAMINE_SECURITY_ALIGNMENT,
+            },
+            cost=EXAMINE_ACTION_COST,
+            description="Inspect a nearby object and refine its perceived properties.",
+        )
+
+    def _push_action_definition(self) -> ActionDefinition:
+        """Build the current push action definition."""
+
+        return ActionDefinition(
+            name=ACTION_PUSH,
+            category=ACTION_CATEGORY_INTERACTION,
+            parameters={PARAMETER_OBJECT_ID: PARAMETER_STRING},
+            drive_alignment={
+                DRIVE_MASTERY: PUSH_MASTERY_ALIGNMENT,
+                DRIVE_SURVIVAL: PUSH_SURVIVAL_ALIGNMENT,
+            },
+            cost=PUSH_ACTION_COST,
+            description="Push a nearby object if the world allows it to move.",
+        )
+
+    def _heat_action_definition(self) -> ActionDefinition:
+        """Build the current heat action definition."""
+
+        return ActionDefinition(
+            name=ACTION_HEAT,
+            category=ACTION_CATEGORY_INTERACTION,
+            parameters={PARAMETER_OBJECT_ID: PARAMETER_STRING},
+            drive_alignment={
+                DRIVE_MASTERY: HEAT_MASTERY_ALIGNMENT,
+                DRIVE_SECURITY: HEAT_SECURITY_ALIGNMENT,
+            },
+            cost=HEAT_ACTION_COST,
+            description="Increase the temperature of a nearby object.",
+        )
+
+    def _cool_action_definition(self) -> ActionDefinition:
+        """Build the current cool action definition."""
+
+        return ActionDefinition(
+            name=ACTION_COOL,
+            category=ACTION_CATEGORY_INTERACTION,
+            parameters={PARAMETER_OBJECT_ID: PARAMETER_STRING},
+            drive_alignment={
+                DRIVE_MASTERY: COOL_MASTERY_ALIGNMENT,
+                DRIVE_SECURITY: COOL_SECURITY_ALIGNMENT,
+            },
+            cost=COOL_ACTION_COST,
+            description="Decrease the temperature of a nearby object.",
+        )
+
+    def _combine_action_definition(self) -> ActionDefinition:
+        """Build the current combine action definition."""
+
+        return ActionDefinition(
+            name=ACTION_COMBINE,
+            category=ACTION_CATEGORY_INTERACTION,
+            parameters={
+                PARAMETER_OBJECT_ID: PARAMETER_STRING,
+                PARAMETER_TARGET_ID: PARAMETER_STRING,
+            },
+            drive_alignment={
+                DRIVE_MASTERY: COMBINE_MASTERY_ALIGNMENT,
+                DRIVE_ACTUALIZATION: COMBINE_ACTUALIZATION_ALIGNMENT,
+            },
+            cost=COMBINE_ACTION_COST,
+            description="Combine a nearby object with a compatible neighbor.",
+        )
 
     def reset(self) -> Observation:
         """Reset the simulation world and return the first observation."""
@@ -262,9 +416,9 @@ class TextSimAdapter(EnvironmentInterface):
         nearby_signature = self._state_signature(resulting_state["nearby_objects"])
         novelty = self._novelty_from_signature(nearby_signature)
         valence = NEUTRAL_VALENCE
-        if action.name == "move":
+        if action.name == ACTION_MOVE:
             valence = novelty * POSITIVE_NOVELTY_VALENCE
-        elif action.name == "examine":
+        elif action.name == ACTION_EXAMINE:
             valence = min(MAX_VALENCE, (novelty * POSITIVE_NOVELTY_VALENCE) + EXAMINE_NOVELTY_BONUS)
         else:
             before = outcome_details.get("before", {})
