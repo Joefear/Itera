@@ -22,7 +22,7 @@ except ModuleNotFoundError:  # pragma: no cover - convenience for direct executi
     from core.identity import Identity  # type: ignore[no-redef]
     from interface.environment import Action  # type: ignore[no-redef]
 
-DEFAULT_MAX_CYCLES = 1000
+DEFAULT_MAX_CYCLES = 10_000_000
 DEFAULT_MAX_DURATION_SECONDS = 1800.0
 DEFAULT_IDENTITY_NAME = "Itera"
 DEFAULT_DATA_DIR = "data/identity"
